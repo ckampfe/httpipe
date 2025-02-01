@@ -7,7 +7,7 @@ use axum::Router;
 use rand::distr::{Alphanumeric, SampleString};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, oneshot, Mutex};
 use tokio_stream::StreamExt;
 
 async fn pubsub_create(State(state): State<Arc<AppState>>) -> axum::response::Result<String> {
@@ -29,7 +29,6 @@ async fn pubsub_create(State(state): State<Arc<AppState>>) -> axum::response::Re
 async fn pubsub_broadcast(
     Path(channel_id): Path<String>,
     State(state): State<Arc<AppState>>,
-    // body: String,
     body: Body,
 ) -> axum::response::Result<()> {
     let pubsub_clients = state.pubsub_clients.lock().await;
@@ -86,7 +85,6 @@ async fn pubsub_close(
     Path(channel_id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Result<()> {
-    // let mut state = state.lock().await;
     let mut pubsub_clients = state.pubsub_clients.lock().await;
 
     if let Some(tx) = pubsub_clients.get(&channel_id) {
@@ -102,7 +100,6 @@ async fn pubsub_count(
     Path(channel_id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Result<String> {
-    // let state = state.lock().await;
     let pubsub_clients = state.pubsub_clients.lock().await;
 
     if let Some(tx) = pubsub_clients.get(&channel_id) {
@@ -144,7 +141,7 @@ async fn channel_broadcast(
 
         let body_stream = body.into_data_stream();
 
-        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let (done_tx, done_rx) = oneshot::channel();
 
         let done = Done { tx: Some(done_tx) };
 
@@ -164,7 +161,7 @@ async fn channel_broadcast(
 /// when this is dropped, it signals to the producer that we're done,
 /// and it can return an 200 OK
 struct Done {
-    tx: Option<tokio::sync::oneshot::Sender<()>>,
+    tx: Option<oneshot::Sender<()>>,
 }
 
 impl Drop for Done {
@@ -257,20 +254,20 @@ async fn main() -> anyhow::Result<()> {
 
     let pubsub_routes = Router::new()
         .route("/pubsubs/create", post(pubsub_create))
-        .route("/pubsubs/{channel_id}", post(pubsub_broadcast))
         .route("/pubsubs/{channel_id}", get(pubsub_subscribe))
-        .route("/pubsubs/{channel_id}/subscribers_count", get(pubsub_count))
-        .route("/pubsubs/{channel_id}", delete(pubsub_close));
+        .route("/pubsubs/{channel_id}", post(pubsub_broadcast))
+        .route("/pubsubs/{channel_id}", delete(pubsub_close))
+        .route("/pubsubs/{channel_id}/subscribers_count", get(pubsub_count));
 
     let channels_routes = Router::new()
         .route("/channels/create", post(channel_create))
-        .route("/channels/{channel_id}", post(channel_broadcast))
         .route("/channels/{channel_id}", get(channel_subscribe))
+        .route("/channels/{channel_id}", post(channel_broadcast))
+        .route("/channels/{channel_id}", delete(channel_close))
         .route(
             "/channels/{channel_id}/subscribers_count",
             get(channel_subscriber_count),
-        )
-        .route("/channels/{channel_id}", delete(channel_close));
+        );
 
     let app = Router::new()
         .merge(pubsub_routes)
