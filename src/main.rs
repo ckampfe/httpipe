@@ -7,6 +7,7 @@ use axum::Router;
 use clap::Parser;
 use rand::distr::{Alphanumeric, SampleString};
 use std::collections::HashMap;
+use std::error::Error;
 use std::sync::Arc;
 use tokio::sync::{broadcast, oneshot, Mutex};
 use tokio_stream::StreamExt;
@@ -259,7 +260,7 @@ struct Options {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<(), Box<dyn Error>> {
     let options = Options::parse();
 
     let state = Arc::new(AppState::default());
