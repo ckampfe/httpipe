@@ -254,7 +254,7 @@ struct AppState {
 
 #[derive(Parser)]
 struct Options {
-    #[arg(short, long, env)]
+    #[arg(short, long, env, default_value = "3000")]
     port: u16,
 }
 
