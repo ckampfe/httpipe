@@ -29,7 +29,7 @@ async fn pubsub_create(State(state): State<Arc<AppState>>) -> axum::response::Re
 }
 
 async fn pubsub_broadcast(
-    Path(channel_id): Path<String>,
+    Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
     body: Body,
 ) -> axum::response::Result<()> {
@@ -37,7 +37,7 @@ async fn pubsub_broadcast(
 
     let mut body_stream = body.into_data_stream();
 
-    if let Some(tx) = pubsub_clients.get(&channel_id) {
+    if let Some(tx) = pubsub_clients.get(&id) {
         while let Some(frame) = body_stream.next().await {
             let bytes = frame.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
             let _ = tx.send(Message::Data(bytes));
@@ -52,12 +52,12 @@ async fn pubsub_broadcast(
 }
 
 async fn pubsub_subscribe(
-    Path(channel_id): Path<String>,
+    Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Result<impl IntoResponse> {
     let pubsub_clients = state.pubsub_clients.lock().await;
 
-    if let Some(tx) = pubsub_clients.get(&channel_id) {
+    if let Some(tx) = pubsub_clients.get(&id) {
         let rx = tx.subscribe();
 
         let stream = tokio_stream::wrappers::BroadcastStream::new(rx);
@@ -84,27 +84,27 @@ async fn pubsub_subscribe(
 }
 
 async fn pubsub_close(
-    Path(channel_id): Path<String>,
+    Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Result<()> {
     let mut pubsub_clients = state.pubsub_clients.lock().await;
 
-    if let Some(tx) = pubsub_clients.get(&channel_id) {
+    if let Some(tx) = pubsub_clients.get(&id) {
         let _ = tx.send(Message::Close);
     }
 
-    pubsub_clients.remove(&channel_id);
+    pubsub_clients.remove(&id);
 
     Ok(())
 }
 
 async fn pubsub_count(
-    Path(channel_id): Path<String>,
+    Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Result<String> {
     let pubsub_clients = state.pubsub_clients.lock().await;
 
-    if let Some(tx) = pubsub_clients.get(&channel_id) {
+    if let Some(tx) = pubsub_clients.get(&id) {
         let subscribers_count = tx.receiver_count();
         Ok(subscribers_count.to_string())
     } else {
@@ -130,13 +130,13 @@ async fn channel_create(State(state): State<Arc<AppState>>) -> axum::response::R
 
 async fn channel_broadcast(
     request_headers: HeaderMap,
-    Path(channel_id): Path<String>,
+    Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
     body: Body,
 ) -> axum::response::Result<()> {
     let channel_clients = state.channel_clients.lock().await;
 
-    if let Some((tx, _rx)) = channel_clients.get(&channel_id) {
+    if let Some((tx, _rx)) = channel_clients.get(&id) {
         let tx = tx.clone();
 
         drop(channel_clients);
@@ -178,12 +178,12 @@ impl Drop for Done {
 }
 
 async fn channel_subscribe(
-    Path(channel_id): Path<String>,
+    Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Result<impl IntoResponse> {
     let channel_clients = state.channel_clients.lock().await;
 
-    if let Some((_tx, rx)) = channel_clients.get(&channel_id) {
+    if let Some((_tx, rx)) = channel_clients.get(&id) {
         let rx = rx.clone();
 
         drop(channel_clients);
@@ -207,11 +207,11 @@ async fn channel_subscribe(
 }
 
 async fn channel_subscriber_count(
-    Path(channel_id): Path<String>,
+    Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Result<String> {
     let channel_clients = state.channel_clients.lock().await;
-    if let Some((_tx, rx)) = channel_clients.get(&channel_id) {
+    if let Some((_tx, rx)) = channel_clients.get(&id) {
         Ok(rx.receiver_count().to_string())
     } else {
         Err(StatusCode::NOT_FOUND.into())
@@ -219,12 +219,12 @@ async fn channel_subscriber_count(
 }
 
 async fn channel_close(
-    Path(channel_id): Path<String>,
+    Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Result<()> {
     let mut channel_clients = state.channel_clients.lock().await;
 
-    channel_clients.remove(&channel_id);
+    channel_clients.remove(&id);
 
     Ok(())
 }
@@ -267,18 +267,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let pubsub_routes = Router::new()
         .route("/pubsubs/create", post(pubsub_create))
-        .route("/pubsubs/{channel_id}", get(pubsub_subscribe))
-        .route("/pubsubs/{channel_id}", post(pubsub_broadcast))
-        .route("/pubsubs/{channel_id}", delete(pubsub_close))
-        .route("/pubsubs/{channel_id}/subscribers_count", get(pubsub_count));
+        .route("/pubsubs/{id}", get(pubsub_subscribe))
+        .route("/pubsubs/{id}", post(pubsub_broadcast))
+        .route("/pubsubs/{id}", delete(pubsub_close))
+        .route("/pubsubs/{id}/subscribers_count", get(pubsub_count));
 
     let channels_routes = Router::new()
         .route("/channels/create", post(channel_create))
-        .route("/channels/{channel_id}", get(channel_subscribe))
-        .route("/channels/{channel_id}", post(channel_broadcast))
-        .route("/channels/{channel_id}", delete(channel_close))
+        .route("/channels/{id}", get(channel_subscribe))
+        .route("/channels/{id}", post(channel_broadcast))
+        .route("/channels/{id}", delete(channel_close))
         .route(
-            "/channels/{channel_id}/subscribers_count",
+            "/channels/{id}/subscribers_count",
             get(channel_subscriber_count),
         );
 
