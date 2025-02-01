@@ -4,6 +4,7 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::Router;
+use clap::Parser;
 use rand::distr::{Alphanumeric, SampleString};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -159,7 +160,7 @@ async fn channel_broadcast(
 }
 
 /// when this is dropped, it signals to the producer that we're done,
-/// and it can return an 200 OK
+/// and it can return 200 OK
 struct Done {
     tx: Option<oneshot::Sender<()>>,
 }
@@ -167,7 +168,10 @@ struct Done {
 impl Drop for Done {
     fn drop(&mut self) {
         // needed because we can't move out of a &mut
-        let tx = self.tx.take().expect("this should always be Some");
+        let tx = self
+            .tx
+            .take()
+            .expect("this should never happen, it should always be Some");
         let _ = tx.send(());
     }
 }
@@ -248,8 +252,16 @@ struct AppState {
     channel_clients: ChannelClients,
 }
 
+#[derive(Parser)]
+struct Options {
+    #[arg(short, long, env)]
+    port: u16,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let options = Options::parse();
+
     let state = Arc::new(AppState::default());
 
     let pubsub_routes = Router::new()
@@ -274,7 +286,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(channels_routes)
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
+    let listener = tokio::net::TcpListener::bind(("0.0.0.0", options.port)).await?;
 
     Ok(axum::serve(listener, app).await?)
 }
