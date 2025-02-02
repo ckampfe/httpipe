@@ -390,7 +390,7 @@ mod tests {
 
         let create_channel_handle = tokio::spawn(async move {
             reqwest::Client::new()
-                .post("http://localhost:3000/channels")
+                .post(format!("http://localhost:{port}/channels"))
                 .send()
                 .await
                 .unwrap()
@@ -407,14 +407,14 @@ mod tests {
         let get_handle = tokio::spawn(async move {
             let id = id_clone;
 
-            reqwest::get(format!("http://localhost:3000/channels/{id}"))
+            reqwest::get(format!("http://localhost:{port}/channels/{id}"))
                 .await
                 .unwrap()
         });
 
         let post_handle = tokio::spawn(async move {
             reqwest::Client::new()
-                .post(format!("http://localhost:3000/channels/{id}"))
+                .post(format!("http://localhost:{port}/channels/{id}"))
                 .json(&test_message)
                 .send()
                 .await
@@ -462,7 +462,7 @@ mod tests {
 
         let create_channel_handle = tokio::spawn(async move {
             reqwest::Client::new()
-                .post("http://localhost:3000/channels")
+                .post(format!("http://localhost:{port}/channels"))
                 .send()
                 .await
                 .unwrap()
@@ -479,14 +479,14 @@ mod tests {
         let get_handle = tokio::spawn(async move {
             let id = id_clone;
 
-            reqwest::get(format!("http://localhost:3000/channels/{id}"))
+            reqwest::get(format!("http://localhost:{port}/channels/{id}"))
                 .await
                 .unwrap()
         });
 
         let post_handle = tokio::spawn(async move {
             reqwest::Client::new()
-                .post(format!("http://localhost:3000/channels/{id}"))
+                .post(format!("http://localhost:{port}/channels/{id}"))
                 .body(test_message)
                 .send()
                 .await
