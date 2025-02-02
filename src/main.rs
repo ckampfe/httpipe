@@ -112,7 +112,9 @@ async fn pubsub_count(
     }
 }
 
-async fn channel_create(State(state): State<Arc<AppState>>) -> axum::response::Result<String> {
+async fn channel_create(
+    State(state): State<Arc<AppState>>,
+) -> axum::response::Result<impl IntoResponse> {
     let mut channel_clients = state.channel_clients.lock().await;
 
     let channel_id = Alphanumeric.sample_string(&mut rand::rng(), 20);
@@ -122,7 +124,7 @@ async fn channel_create(State(state): State<Arc<AppState>>) -> axum::response::R
 
         channel_clients.insert(channel_id.clone(), (tx, rx));
 
-        Ok(channel_id)
+        Ok((StatusCode::CREATED, channel_id))
     } else {
         Err(StatusCode::INTERNAL_SERVER_ERROR.into())
     }
@@ -143,9 +145,7 @@ async fn channel_broadcast(
 
         let body_stream = body.into_data_stream();
 
-        let (done_tx, done_rx) = oneshot::channel();
-
-        let done = Done { tx: Some(done_tx) };
+        let (done, done_rx) = Done::new();
 
         tx.send_async((body_stream, request_headers, done))
             .await
@@ -165,6 +165,13 @@ async fn channel_broadcast(
 /// and it can return 200 OK
 struct Done {
     tx: Option<oneshot::Sender<()>>,
+}
+
+impl Done {
+    fn new() -> (Done, tokio::sync::oneshot::Receiver<()>) {
+        let (tx, rx) = oneshot::channel();
+        (Done { tx: Some(tx) }, rx)
+    }
 }
 
 impl Drop for Done {
@@ -260,21 +267,18 @@ struct Options {
     port: u16,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let options = Options::parse();
-
+fn make_app() -> axum::Router {
     let state = Arc::new(AppState::default());
 
     let pubsub_routes = Router::new()
-        .route("/pubsubs/create", post(pubsub_create))
+        .route("/pubsubs", post(pubsub_create))
         .route("/pubsubs/{id}", get(pubsub_subscribe))
         .route("/pubsubs/{id}", post(pubsub_broadcast))
         .route("/pubsubs/{id}", delete(pubsub_close))
         .route("/pubsubs/{id}/subscribers_count", get(pubsub_count));
 
     let channels_routes = Router::new()
-        .route("/channels/create", post(channel_create))
+        .route("/channels", post(channel_create))
         .route("/channels/{id}", get(channel_subscribe))
         .route("/channels/{id}", post(channel_broadcast))
         .route("/channels/{id}", delete(channel_close))
@@ -283,12 +287,105 @@ async fn main() -> Result<(), Box<dyn Error>> {
             get(channel_subscriber_count),
         );
 
-    let app = Router::new()
+    Router::new()
         .merge(pubsub_routes)
         .merge(channels_routes)
-        .with_state(state);
+        .with_state(state)
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let options = Options::parse();
+
+    let app = make_app();
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", options.port)).await?;
 
     Ok(axum::serve(listener, app).await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{make_app, Done};
+    use reqwest::StatusCode;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+    struct TestMessage {
+        greeting: String,
+    }
+
+    #[tokio::test]
+    async fn simple_channels_work() {
+        let test_message = TestMessage {
+            greeting: "Bwah!".to_string(),
+        };
+
+        let test_message_clone = test_message.clone();
+
+        let app = make_app();
+
+        let listener = tokio::net::TcpListener::bind(("0.0.0.0", 3000))
+            .await
+            .unwrap();
+
+        let (_done, done_rx) = Done::new();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move { done_rx.await.unwrap() })
+                .await
+                .unwrap();
+        });
+
+        let create_channel_handle = tokio::spawn(async move {
+            reqwest::Client::new()
+                .post("http://localhost:3000/channels")
+                .send()
+                .await
+                .unwrap()
+        });
+
+        let create_channel_response = create_channel_handle.await.unwrap();
+
+        assert_eq!(create_channel_response.status(), StatusCode::CREATED);
+        let id = create_channel_response.text().await.unwrap();
+        assert_eq!(id.len(), 20);
+
+        let id_clone = id.clone();
+
+        let get_handle = tokio::spawn(async move {
+            let id = id_clone;
+
+            reqwest::get(format!("http://localhost:3000/channels/{id}"))
+                .await
+                .unwrap()
+        });
+
+        let post_handle = tokio::spawn(async move {
+            reqwest::Client::new()
+                .post(format!("http://localhost:3000/channels/{id}"))
+                .json(&test_message)
+                .send()
+                .await
+                .unwrap()
+        });
+
+        let get_response = get_handle.await.unwrap();
+        let post_response = post_handle.await.unwrap();
+
+        assert_eq!(post_response.status(), StatusCode::OK);
+        assert_eq!(get_response.status(), StatusCode::OK);
+
+        assert_eq!(
+            get_response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .unwrap(),
+            "application/json"
+        );
+        let get_response_text = get_response.text().await.unwrap();
+        let get_response_parsed: TestMessage = serde_json::from_str(&get_response_text).unwrap();
+        assert_eq!(get_response_parsed, test_message_clone);
+    }
 }
