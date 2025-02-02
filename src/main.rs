@@ -14,7 +14,9 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, oneshot, Mutex};
 use tokio_stream::StreamExt;
 
-async fn pubsub_create(State(state): State<Arc<AppState>>) -> axum::response::Result<String> {
+async fn pubsub_create(
+    State(state): State<Arc<AppState>>,
+) -> axum::response::Result<impl IntoResponse> {
     let mut pubsub_clients = state.pubsub_clients.lock().await;
 
     let channel_id = Alphanumeric.sample_string(&mut rand::rng(), 20);
@@ -24,13 +26,14 @@ async fn pubsub_create(State(state): State<Arc<AppState>>) -> axum::response::Re
 
         pubsub_clients.insert(channel_id.clone(), tx);
 
-        Ok(channel_id)
+        Ok((StatusCode::CREATED, channel_id))
     } else {
         Err(StatusCode::INTERNAL_SERVER_ERROR.into())
     }
 }
 
 async fn pubsub_broadcast(
+    request_headers: HeaderMap,
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
     body: Body,
@@ -40,12 +43,19 @@ async fn pubsub_broadcast(
     let mut body_stream = body.into_data_stream();
 
     if let Some(tx) = pubsub_clients.get(&id) {
+        let tx = tx.clone();
+
+        drop(pubsub_clients);
+
+        tx.send(PubsubMessage::Headers(request_headers))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
         while let Some(frame) = body_stream.next().await {
             let bytes = frame.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-            let _ = tx.send(Message::Data(bytes));
+            let _ = tx.send(PubsubMessage::Data(bytes));
         }
 
-        let _ = tx.send(Message::Close);
+        let _ = tx.send(PubsubMessage::Close);
 
         Ok(())
     } else {
@@ -62,7 +72,16 @@ async fn pubsub_subscribe(
     if let Some(tx) = pubsub_clients.get(&id) {
         let rx = tx.subscribe();
 
-        let stream = tokio_stream::wrappers::BroadcastStream::new(rx);
+        drop(pubsub_clients);
+
+        let mut stream = tokio_stream::wrappers::BroadcastStream::new(rx);
+
+        let producer_request_headers =
+            if let Some(Ok(PubsubMessage::Headers(headers))) = stream.next().await {
+                headers
+            } else {
+                return Err(StatusCode::INTERNAL_SERVER_ERROR.into());
+            };
 
         // TODO figure out how to get producer headers here
         // so we can appropriately forward on the headers
@@ -70,8 +89,11 @@ async fn pubsub_subscribe(
             .map(|m| {
                 let m = m.unwrap();
                 match m {
-                    Message::Data(s) => Some(Ok::<Bytes, String>(s)),
-                    Message::Close => None,
+                    PubsubMessage::Data(s) => Some(Ok::<Bytes, String>(s)),
+                    PubsubMessage::Close => None,
+                    PubsubMessage::Headers(_) => panic!(
+                        "we should never receive headers here, always before the main data stream"
+                    ),
                 }
             })
             .take_while(|item| item.is_some())
@@ -79,7 +101,20 @@ async fn pubsub_subscribe(
 
         let body = Body::from_stream(stream);
 
-        let headers = [(header::CONTENT_TYPE, "application/octet-stream")];
+        let producer_content_type = producer_request_headers
+            .get(header::CONTENT_TYPE)
+            .cloned()
+            .and_then(|header_value| {
+                // TODO should we also reject multipart/form-data?
+                if header_value == "application/x-www-form-urlencoded" {
+                    None
+                } else {
+                    Some(header_value)
+                }
+            })
+            .unwrap_or(HeaderValue::from_static("application/octet-stream"));
+
+        let headers = [(header::CONTENT_TYPE, producer_content_type)];
 
         Ok((headers, body))
     } else {
@@ -94,7 +129,7 @@ async fn pubsub_close(
     let mut pubsub_clients = state.pubsub_clients.lock().await;
 
     if let Some(tx) = pubsub_clients.get(&id) {
-        let _ = tx.send(Message::Close);
+        let _ = tx.send(PubsubMessage::Close);
     }
 
     pubsub_clients.remove(&id);
@@ -256,12 +291,13 @@ async fn app_state(State(state): State<Arc<AppState>>) -> axum::response::Result
 }
 
 #[derive(Clone)]
-enum Message {
+enum PubsubMessage {
+    Headers(HeaderMap),
     Data(Bytes),
     Close,
 }
 
-type PubSubClients = Mutex<HashMap<String, broadcast::Sender<Message>>>;
+type PubSubClients = Mutex<HashMap<String, broadcast::Sender<PubsubMessage>>>;
 
 type ChannelClients = Mutex<
     HashMap<
@@ -440,6 +476,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pubsub_simple_json() {
+        let test_message = TestMessage {
+            greeting: "Bwah!".to_string(),
+        };
+
+        let test_message_clone = test_message.clone();
+
+        let options = Options::default();
+
+        let port = get_port();
+
+        let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
+            .await
+            .unwrap();
+
+        let (_done, done_rx) = Done::new();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app(options))
+                .with_graceful_shutdown(async move { done_rx.await.unwrap() })
+                .await
+                .unwrap();
+        });
+
+        let create_channel_handle = tokio::spawn(async move {
+            reqwest::Client::new()
+                .post(format!("http://localhost:{port}/pubsub"))
+                .send()
+                .await
+                .unwrap()
+        });
+
+        let create_channel_response = create_channel_handle.await.unwrap();
+
+        assert_eq!(create_channel_response.status(), StatusCode::CREATED);
+        let id = create_channel_response.text().await.unwrap();
+        assert_eq!(id.len(), 20);
+
+        let id_clone = id.clone();
+
+        let get_handle = tokio::spawn(async move {
+            let id = id_clone;
+
+            reqwest::get(format!("http://localhost:{port}/pubsub/{id}"))
+                .await
+                .unwrap()
+        });
+
+        // post is nonblocking, get is blocking,
+        // so we need to ensure that get is set up and blocking
+        // before we run the post
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        let post_handle = tokio::spawn(async move {
+            reqwest::Client::new()
+                .post(format!("http://localhost:{port}/pubsub/{id}"))
+                .json(&test_message)
+                .send()
+                .await
+                .unwrap()
+        });
+
+        let get_response = get_handle.await.unwrap();
+        let post_response = post_handle.await.unwrap();
+
+        assert_eq!(post_response.status(), StatusCode::OK);
+        assert_eq!(get_response.status(), StatusCode::OK);
+
+        assert_eq!(
+            get_response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .unwrap(),
+            "application/json"
+        );
+        let get_response_text = get_response.text().await.unwrap();
+        let get_response_parsed: TestMessage = serde_json::from_str(&get_response_text).unwrap();
+        assert_eq!(get_response_parsed, test_message_clone);
+    }
+
+    #[tokio::test]
     async fn channels_content_type_is_application_octet_stream_unless_otherwise_specified() {
         let test_message = "hello";
 
@@ -487,6 +604,82 @@ mod tests {
         let post_handle = tokio::spawn(async move {
             reqwest::Client::new()
                 .post(format!("http://localhost:{port}/channels/{id}"))
+                .body(test_message)
+                .send()
+                .await
+                .unwrap()
+        });
+
+        let get_response = get_handle.await.unwrap();
+        let post_response = post_handle.await.unwrap();
+
+        assert_eq!(post_response.status(), StatusCode::OK);
+        assert_eq!(get_response.status(), StatusCode::OK);
+
+        assert_eq!(
+            get_response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .unwrap(),
+            "application/octet-stream"
+        );
+        let get_response_text = get_response.text().await.unwrap();
+        assert_eq!(get_response_text, test_message);
+    }
+
+    #[tokio::test]
+    async fn pubsub_content_type_is_application_octet_stream_unless_otherwise_specified() {
+        let test_message = "hello";
+
+        let options = Options::default();
+
+        let port = get_port();
+
+        let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
+            .await
+            .unwrap();
+
+        let (_done, done_rx) = Done::new();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app(options))
+                .with_graceful_shutdown(async move { done_rx.await.unwrap() })
+                .await
+                .unwrap();
+        });
+
+        let create_channel_handle = tokio::spawn(async move {
+            reqwest::Client::new()
+                .post(format!("http://localhost:{port}/pubsub"))
+                .send()
+                .await
+                .unwrap()
+        });
+
+        let create_channel_response = create_channel_handle.await.unwrap();
+
+        assert_eq!(create_channel_response.status(), StatusCode::CREATED);
+        let id = create_channel_response.text().await.unwrap();
+        assert_eq!(id.len(), 20);
+
+        let id_clone = id.clone();
+
+        let get_handle = tokio::spawn(async move {
+            let id = id_clone;
+
+            reqwest::get(format!("http://localhost:{port}/pubsub/{id}"))
+                .await
+                .unwrap()
+        });
+
+        // post is nonblocking, get is blocking,
+        // so we need to ensure that get is set up and blocking
+        // before we run the post
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        let post_handle = tokio::spawn(async move {
+            reqwest::Client::new()
+                .post(format!("http://localhost:{port}/pubsub/{id}"))
                 .body(test_message)
                 .send()
                 .await
