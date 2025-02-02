@@ -10,6 +10,14 @@ flume = "0.11"
 rand = "0.9"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
+tower-http = { version = "0.6", features = [
+    "compression-full",
+    "normalize-path",
+    "timeout",
+    "trace",
+] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json"] }

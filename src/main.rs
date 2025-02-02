@@ -2,7 +2,7 @@
 
 use axum::body::{Body, BodyDataStream, Bytes};
 use axum::extract::{Path, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::Router;
@@ -64,6 +64,8 @@ async fn pubsub_subscribe(
 
         let stream = tokio_stream::wrappers::BroadcastStream::new(rx);
 
+        // TODO figure out how to get producer headers here
+        // so we can appropriately forward on the headers
         let stream = stream
             .map(|m| {
                 let m = m.unwrap();
@@ -77,7 +79,7 @@ async fn pubsub_subscribe(
 
         let body = Body::from_stream(stream);
 
-        let headers = [(header::CONTENT_TYPE, "text/plain")];
+        let headers = [(header::CONTENT_TYPE, "application/octet-stream")];
 
         Ok((headers, body))
     } else {
@@ -163,14 +165,13 @@ async fn channel_broadcast(
     }
 }
 
-/// when this is dropped, it signals to the producer that we're done,
-/// and it can return 200 OK
+/// when this is dropped it signals the oneshot channel
 struct Done {
     tx: Option<oneshot::Sender<()>>,
 }
 
 impl Done {
-    fn new() -> (Done, tokio::sync::oneshot::Receiver<()>) {
+    fn new() -> (Done, oneshot::Receiver<()>) {
         let (tx, rx) = oneshot::channel();
         (Done { tx: Some(tx) }, rx)
     }
@@ -200,17 +201,28 @@ async fn channel_subscribe(
 
         let rx = rx.into_recv_async();
 
-        let (stream, request_headers, _done) =
+        let (stream, producer_request_headers, _done) =
             rx.await.map_err(|_e| StatusCode::INTERNAL_SERVER_ERROR)?;
 
         let body = Body::from_stream(stream);
 
-        if let Some(content_type) = request_headers.get(header::CONTENT_TYPE) {
-            let headers = [(header::CONTENT_TYPE, content_type)];
-            Ok((headers, body).into_response())
-        } else {
-            Ok(body.into_response())
-        }
+        // we do this because by default, POSTs from curl are `x-www-form-urlencoded`
+        let producer_content_type = producer_request_headers
+            .get(header::CONTENT_TYPE)
+            .cloned()
+            .and_then(|header_value| {
+                // TODO should we also reject multipart/form-data?
+                if header_value == "application/x-www-form-urlencoded" {
+                    None
+                } else {
+                    Some(header_value)
+                }
+            })
+            .unwrap_or(HeaderValue::from_static("application/octet-stream"));
+
+        let headers = [(header::CONTENT_TYPE, producer_content_type)];
+
+        Ok((headers, body).into_response())
     } else {
         Err(StatusCode::NOT_FOUND.into())
     }
@@ -239,6 +251,10 @@ async fn channel_close(
     Ok(())
 }
 
+async fn app_state(State(state): State<Arc<AppState>>) -> axum::response::Result<String> {
+    Ok(format!("{:#?}", state))
+}
+
 #[derive(Clone)]
 enum Message {
     Data(Bytes),
@@ -261,16 +277,23 @@ type ChannelClients = Mutex<
 struct AppState {
     pubsub_clients: PubSubClients,
     channel_clients: ChannelClients,
+    options: Options,
 }
 
-#[derive(Parser)]
+#[derive(Parser, Debug, Default)]
 struct Options {
     #[arg(short, long, env, default_value = "3000")]
     port: u16,
+    #[arg(short, long, env)]
+    request_timeout: Option<u64>,
 }
 
-fn make_app() -> axum::Router {
-    let state = Arc::new(AppState::default());
+fn app(options: Options) -> axum::Router {
+    let state = AppState {
+        options,
+        ..Default::default()
+    };
+    let state = Arc::new(state);
 
     let pubsub_routes = Router::new()
         .route("/pubsubs", post(pubsub_create))
@@ -289,28 +312,51 @@ fn make_app() -> axum::Router {
             get(channel_subscriber_count),
         );
 
-    Router::new()
+    let other_routes = Router::new().route("/state", get(app_state));
+
+    let router = Router::new()
         .merge(pubsub_routes)
         .merge(channels_routes)
-        .with_state(state)
+        .merge(other_routes)
+        .with_state(Arc::clone(&state))
+        .layer(tower_http::normalize_path::NormalizePathLayer::trim_trailing_slash())
+        .layer(tower_http::compression::CompressionLayer::new())
+        .layer(tower_http::trace::TraceLayer::new_for_http());
+
+    if let Some(request_timeout) = state.options.request_timeout {
+        router.layer(tower_http::timeout::TimeoutLayer::new(
+            std::time::Duration::from_secs(request_timeout),
+        ))
+    } else {
+        router
+    }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let options = Options::parse();
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
 
-    let app = make_app();
+    let options = Options::parse();
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", options.port)).await?;
 
-    Ok(axum::serve(listener, app).await?)
+    Ok(axum::serve(listener, app(options)).await?)
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{make_app, Done};
+    use crate::{app, Done, Options};
     use reqwest::StatusCode;
     use serde::{Deserialize, Serialize};
+    use std::sync::atomic::AtomicU16;
+
+    static PORT: AtomicU16 = AtomicU16::new(3000);
+
+    fn get_port() -> u16 {
+        PORT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    }
 
     #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
     struct TestMessage {
@@ -325,16 +371,18 @@ mod tests {
 
         let test_message_clone = test_message.clone();
 
-        let app = make_app();
+        let options = Options::default();
 
-        let listener = tokio::net::TcpListener::bind(("0.0.0.0", 3000))
+        let port = get_port();
+
+        let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
             .await
             .unwrap();
 
         let (_done, done_rx) = Done::new();
 
         tokio::spawn(async move {
-            axum::serve(listener, app)
+            axum::serve(listener, app(options))
                 .with_graceful_shutdown(async move { done_rx.await.unwrap() })
                 .await
                 .unwrap();
@@ -389,5 +437,76 @@ mod tests {
         let get_response_text = get_response.text().await.unwrap();
         let get_response_parsed: TestMessage = serde_json::from_str(&get_response_text).unwrap();
         assert_eq!(get_response_parsed, test_message_clone);
+    }
+
+    #[tokio::test]
+    async fn content_type_is_application_octet_stream_unless_otherwise_specified() {
+        let test_message = "hello";
+
+        let options = Options::default();
+
+        let port = get_port();
+
+        let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
+            .await
+            .unwrap();
+
+        let (_done, done_rx) = Done::new();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app(options))
+                .with_graceful_shutdown(async move { done_rx.await.unwrap() })
+                .await
+                .unwrap();
+        });
+
+        let create_channel_handle = tokio::spawn(async move {
+            reqwest::Client::new()
+                .post("http://localhost:3000/channels")
+                .send()
+                .await
+                .unwrap()
+        });
+
+        let create_channel_response = create_channel_handle.await.unwrap();
+
+        assert_eq!(create_channel_response.status(), StatusCode::CREATED);
+        let id = create_channel_response.text().await.unwrap();
+        assert_eq!(id.len(), 20);
+
+        let id_clone = id.clone();
+
+        let get_handle = tokio::spawn(async move {
+            let id = id_clone;
+
+            reqwest::get(format!("http://localhost:3000/channels/{id}"))
+                .await
+                .unwrap()
+        });
+
+        let post_handle = tokio::spawn(async move {
+            reqwest::Client::new()
+                .post(format!("http://localhost:3000/channels/{id}"))
+                .body(test_message)
+                .send()
+                .await
+                .unwrap()
+        });
+
+        let get_response = get_handle.await.unwrap();
+        let post_response = post_handle.await.unwrap();
+
+        assert_eq!(post_response.status(), StatusCode::OK);
+        assert_eq!(get_response.status(), StatusCode::OK);
+
+        assert_eq!(
+            get_response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .unwrap(),
+            "application/octet-stream"
+        );
+        let get_response_text = get_response.text().await.unwrap();
+        assert_eq!(get_response_text, test_message);
     }
 }
