@@ -147,7 +147,8 @@ async fn channel_broadcast(
 
         let done = Done { tx: Some(done_tx) };
 
-        tx.send((body_stream, request_headers, done))
+        tx.send_async((body_stream, request_headers, done))
+            .await
             .map_err(|_e| StatusCode::INTERNAL_SERVER_ERROR)?;
 
         done_rx
