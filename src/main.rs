@@ -364,7 +364,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn simple_channels_work() {
+    async fn channels_simple_json() {
         let test_message = TestMessage {
             greeting: "Bwah!".to_string(),
         };
@@ -440,7 +440,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn content_type_is_application_octet_stream_unless_otherwise_specified() {
+    async fn channels_content_type_is_application_octet_stream_unless_otherwise_specified() {
         let test_message = "hello";
 
         let options = Options::default();
