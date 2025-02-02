@@ -2,8 +2,9 @@
 
 [![Rust](https://github.com/ckampfe/httpipe/actions/workflows/rust.yml/badge.svg)](https://github.com/ckampfe/httpipe/actions/workflows/rust.yml)
 
-httpipe is an HTTP server that allows HTTP clients to publish and subscribe to each other.
-clients can interact via a queue-like mechanism ("channels") where a producer and a consumer are matched 1:1 in the order in which they connect, or a fanout mechanism ("pubsub") where a producer can publish a message to many consumers in parallel.
+`httpipe` is an HTTP server that allows HTTP clients to publish and subscribe to each other.
+
+Clients can interact via a queue-like mechanism ("channels") where a producer and a consumer are matched 1:1 in the order in which they connect, or a fanout mechanism ("pubsub") where a producer can publish a message to many consumers in parallel.
 
 ## Channels 
 
