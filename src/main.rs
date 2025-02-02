@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use axum::body::{Body, BodyDataStream, Bytes};
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
