@@ -296,11 +296,11 @@ fn app(options: Options) -> axum::Router {
     let state = Arc::new(state);
 
     let pubsub_routes = Router::new()
-        .route("/pubsubs", post(pubsub_create))
-        .route("/pubsubs/{id}", get(pubsub_subscribe))
-        .route("/pubsubs/{id}", post(pubsub_broadcast))
-        .route("/pubsubs/{id}", delete(pubsub_close))
-        .route("/pubsubs/{id}/subscribers_count", get(pubsub_count));
+        .route("/pubsub", post(pubsub_create))
+        .route("/pubsub/{id}", get(pubsub_subscribe))
+        .route("/pubsub/{id}", post(pubsub_broadcast))
+        .route("/pubsub/{id}", delete(pubsub_close))
+        .route("/pubsub/{id}/subscribers_count", get(pubsub_count));
 
     let channels_routes = Router::new()
         .route("/channels", post(channel_create))
