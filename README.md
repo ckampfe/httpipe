@@ -12,7 +12,35 @@ There are two ways to use this so far, copied directly from patchbay: channels a
 
 ## Examples
 
-### Channels (blocking)
+### Channels (producers and consumers block until they rendezvous)
+
+In terminal #1
+
+```sh
+cargo run
+```
+
+In terminal #2
+
+This will block until there is a consumer.
+
+```sh
+$ curl -XPOST http://localhost:3000/channels
+566f4825-d0b9-4712-b4e4-244884fa6b8c%
+
+$ curl -XPOST -H "Content-Type: application/json" http://localhost:3000/channels/566f4825-d0b9-4712-b4e4-244884fa6b8c -d'{"greeting":"bwah!"}' 
+```
+
+In terminal #3
+
+This will block until there is a producer.
+
+```sh
+$ curl -N -XGET http://localhost:3000/channels/566f4825-d0b9-4712-b4e4-244884fa6b8c
+{"greeting":"bwah!"}%    
+```
+
+### Pubsub (consumers block until there is a producer, but producers _never_ block, and will publish even if there are no consumers)
 
 In terminal #1
 
@@ -23,19 +51,34 @@ cargo run
 In terminal #2
 
 ```sh
-$ curl -XPOST http://localhost:3000/channels/create   
-bEE4RvrHRbOTTkMaPOgY% 
-
-$ curl -XPOST -H "Content-Type: application/json" http://localhost:3000/channels/bEE4RvrHRbOTTkMaPOgY -d'{"greeting":"bwah!"}' 
+$ curl -XPOST http://localhost:3000/pubsub
+566f4825-d0b9-4712-b4e4-244884fa6b8c%
 ```
 
 In terminal #3
 
+Note that this GET _must_ be made before any subsequent posts,
+because for pubsub only GET is blocking. POST is nonblocking.
+
 ```sh
-$ curl -N -XGET http://localhost:3000/channels/bEE4RvrHRbOTTkMaPOgY   
+$ curl -N -XGET http://localhost:3000/pubsub/566f4825-d0b9-4712-b4e4-244884fa6b8c
 {"greeting":"bwah!"}%    
 ```
 
-### Pubsub (non-blocking)
+In terminal #2
 
-Todo
+```sh
+$ curl -XPOST -H "Content-Type: application/json" http://localhost:3000/pubsub/566f4825-d0b9-4712-b4e4-244884fa6b8c -d'{"greeting":"bwah!"}' 
+```
+
+## Options
+
+```
+Usage: httpipe [OPTIONS]
+
+Options:
+  -p, --port <PORT>                        [env: PORT=] [default: 3000]
+  -r, --request-timeout <REQUEST_TIMEOUT>  [env: REQUEST_TIMEOUT=]
+  -h, --help                               Print help
+```
+
