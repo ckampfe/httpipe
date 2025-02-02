@@ -1,5 +1,7 @@
 # httpipe
 
+[![Rust](https://github.com/ckampfe/httpipe/actions/workflows/rust.yml/badge.svg)](https://github.com/ckampfe/httpipe/actions/workflows/rust.yml)
+
 This allows forwarding data from client to client over HTTP via a central server.
 
 This is not my idea!
