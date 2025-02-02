@@ -7,26 +7,26 @@ use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::Router;
 use clap::Parser;
-use rand::distr::{Alphanumeric, SampleString};
 use std::collections::HashMap;
 use std::error::Error;
 use std::sync::Arc;
 use tokio::sync::{broadcast, oneshot, Mutex};
 use tokio_stream::StreamExt;
+use uuid::Uuid;
 
 async fn pubsub_create(
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Result<impl IntoResponse> {
     let mut pubsub_clients = state.pubsub_clients.lock().await;
 
-    let channel_id = Alphanumeric.sample_string(&mut rand::rng(), 20);
+    let channel_id = Uuid::new_v4();
 
-    if !pubsub_clients.contains_key(&channel_id) {
+    if let std::collections::hash_map::Entry::Vacant(e) = pubsub_clients.entry(channel_id) {
         let (tx, _rx) = broadcast::channel(5);
 
-        pubsub_clients.insert(channel_id.clone(), tx);
+        e.insert(tx);
 
-        Ok((StatusCode::CREATED, channel_id))
+        Ok((StatusCode::CREATED, channel_id.to_string()))
     } else {
         Err(StatusCode::INTERNAL_SERVER_ERROR.into())
     }
@@ -34,7 +34,7 @@ async fn pubsub_create(
 
 async fn pubsub_broadcast(
     request_headers: HeaderMap,
-    Path(id): Path<String>,
+    Path(id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
     body: Body,
 ) -> axum::response::Result<()> {
@@ -64,7 +64,7 @@ async fn pubsub_broadcast(
 }
 
 async fn pubsub_subscribe(
-    Path(id): Path<String>,
+    Path(id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Result<impl IntoResponse> {
     let pubsub_clients = state.pubsub_clients.lock().await;
@@ -123,7 +123,7 @@ async fn pubsub_subscribe(
 }
 
 async fn pubsub_close(
-    Path(id): Path<String>,
+    Path(id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Result<()> {
     let mut pubsub_clients = state.pubsub_clients.lock().await;
@@ -138,7 +138,7 @@ async fn pubsub_close(
 }
 
 async fn pubsub_count(
-    Path(id): Path<String>,
+    Path(id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Result<String> {
     let pubsub_clients = state.pubsub_clients.lock().await;
@@ -156,14 +156,14 @@ async fn channel_create(
 ) -> axum::response::Result<impl IntoResponse> {
     let mut channel_clients = state.channel_clients.lock().await;
 
-    let channel_id = Alphanumeric.sample_string(&mut rand::rng(), 20);
+    let channel_id = Uuid::new_v4();
 
-    if !channel_clients.contains_key(&channel_id) {
+    if let std::collections::hash_map::Entry::Vacant(e) = channel_clients.entry(channel_id) {
         let (tx, rx) = flume::bounded(0);
 
-        channel_clients.insert(channel_id.clone(), (tx, rx));
+        e.insert((tx, rx));
 
-        Ok((StatusCode::CREATED, channel_id))
+        Ok((StatusCode::CREATED, channel_id.to_string()))
     } else {
         Err(StatusCode::INTERNAL_SERVER_ERROR.into())
     }
@@ -171,7 +171,7 @@ async fn channel_create(
 
 async fn channel_broadcast(
     request_headers: HeaderMap,
-    Path(id): Path<String>,
+    Path(id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
     body: Body,
 ) -> axum::response::Result<()> {
@@ -224,7 +224,7 @@ impl Drop for Done {
 }
 
 async fn channel_subscribe(
-    Path(id): Path<String>,
+    Path(id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Result<impl IntoResponse> {
     let channel_clients = state.channel_clients.lock().await;
@@ -264,7 +264,7 @@ async fn channel_subscribe(
 }
 
 async fn channel_subscriber_count(
-    Path(id): Path<String>,
+    Path(id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Result<String> {
     let channel_clients = state.channel_clients.lock().await;
@@ -276,7 +276,7 @@ async fn channel_subscriber_count(
 }
 
 async fn channel_close(
-    Path(id): Path<String>,
+    Path(id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Result<()> {
     let mut channel_clients = state.channel_clients.lock().await;
@@ -297,11 +297,11 @@ enum PubsubMessage {
     Close,
 }
 
-type PubSubClients = Mutex<HashMap<String, broadcast::Sender<PubsubMessage>>>;
+type PubSubClients = Mutex<HashMap<Uuid, broadcast::Sender<PubsubMessage>>>;
 
 type ChannelClients = Mutex<
     HashMap<
-        String,
+        Uuid,
         (
             flume::Sender<(BodyDataStream, HeaderMap, Done)>,
             flume::Receiver<(BodyDataStream, HeaderMap, Done)>,
@@ -436,7 +436,7 @@ mod tests {
 
         assert_eq!(create_channel_response.status(), StatusCode::CREATED);
         let id = create_channel_response.text().await.unwrap();
-        assert_eq!(id.len(), 20);
+        assert_eq!(id.len(), 36);
 
         let id_clone = id.clone();
 
@@ -512,7 +512,7 @@ mod tests {
 
         assert_eq!(create_channel_response.status(), StatusCode::CREATED);
         let id = create_channel_response.text().await.unwrap();
-        assert_eq!(id.len(), 20);
+        assert_eq!(id.len(), 36);
 
         let id_clone = id.clone();
 
@@ -589,7 +589,7 @@ mod tests {
 
         assert_eq!(create_channel_response.status(), StatusCode::CREATED);
         let id = create_channel_response.text().await.unwrap();
-        assert_eq!(id.len(), 20);
+        assert_eq!(id.len(), 36);
 
         let id_clone = id.clone();
 
@@ -660,7 +660,7 @@ mod tests {
 
         assert_eq!(create_channel_response.status(), StatusCode::CREATED);
         let id = create_channel_response.text().await.unwrap();
-        assert_eq!(id.len(), 20);
+        assert_eq!(id.len(), 36);
 
         let id_clone = id.clone();
 
