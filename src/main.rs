@@ -10,6 +10,8 @@
 // - [ ] namespaces, e.g., /channels/some_namespace/some_id
 // - [ ] reevalute API endpoints to be more RESTish
 // - [ ] GET only API for browser stuff
+// - [ ] add diagram to README to explain what httpipe is
+// - [ ] rename to httq?
 
 use axum::body::{Body, BodyDataStream, Bytes};
 use axum::extract::{Path, State};
