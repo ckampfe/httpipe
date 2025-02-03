@@ -1,9 +1,9 @@
 #![forbid(unsafe_code)]
 // TODO
 // - [ ] named topics
-// - [ ] list topics
+// - [x] list topics
 // - [x] option to autovivify channels
-// - [ ] option to autivivify pubsubs
+// - [x] option to autivivify pubsubs
 // - [x] option on startup whether to allow autovivify or not
 // - [ ] namespaces, e.g., /channels/some_namespace/some_id
 // - [ ] reevalute API endpoints to be more RESTish
@@ -23,19 +23,29 @@ use tokio::sync::{broadcast, oneshot, Mutex};
 use tokio_stream::StreamExt;
 use uuid::Uuid;
 
+async fn pubsub_index(
+    State(state): State<Arc<AppState>>,
+) -> axum::response::Result<axum::Json<Vec<String>>> {
+    let pubsub_clients = state.pubsub_clients.lock().await;
+
+    Ok(axum::Json(
+        pubsub_clients.keys().cloned().collect::<Vec<_>>(),
+    ))
+}
+
 async fn pubsub_create(
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Result<impl IntoResponse> {
     let mut pubsub_clients = state.pubsub_clients.lock().await;
 
-    let channel_id = Uuid::new_v4();
+    let channel_id = Uuid::new_v4().to_string();
 
-    if let std::collections::hash_map::Entry::Vacant(e) = pubsub_clients.entry(channel_id) {
+    if let std::collections::hash_map::Entry::Vacant(e) = pubsub_clients.entry(channel_id.clone()) {
         let (tx, _rx) = broadcast::channel(5);
 
         e.insert(tx);
 
-        Ok((StatusCode::CREATED, channel_id.to_string()))
+        Ok((StatusCode::CREATED, channel_id))
     } else {
         Err(StatusCode::INTERNAL_SERVER_ERROR.into())
     }
@@ -43,96 +53,106 @@ async fn pubsub_create(
 
 async fn pubsub_broadcast(
     request_headers: HeaderMap,
-    Path(id): Path<Uuid>,
+    Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
     body: Body,
 ) -> axum::response::Result<()> {
-    let pubsub_clients = state.pubsub_clients.lock().await;
+    let mut pubsub_clients = state.pubsub_clients.lock().await;
 
     let mut body_stream = body.into_data_stream();
 
-    if let Some(tx) = pubsub_clients.get(&id) {
-        let tx = tx.clone();
-
-        drop(pubsub_clients);
-
-        tx.send(PubsubMessage::Headers(request_headers))
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-        while let Some(frame) = body_stream.next().await {
-            let bytes = frame.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-            let _ = tx.send(PubsubMessage::Data(bytes));
-        }
-
-        let _ = tx.send(PubsubMessage::Close);
-
-        Ok(())
+    let tx = if let Some(tx) = pubsub_clients.get(&id) {
+        tx.clone()
+    } else if state.options.autovivify {
+        let (tx, _rx) = broadcast::channel(5);
+        pubsub_clients.insert(id, tx.clone());
+        tx
     } else {
-        Err(StatusCode::NOT_FOUND.into())
+        return Err(StatusCode::NOT_FOUND.into());
+    };
+
+    drop(pubsub_clients);
+
+    tx.send(PubsubMessage::Headers(request_headers))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    while let Some(frame) = body_stream.next().await {
+        let bytes = frame.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let _ = tx.send(PubsubMessage::Data(bytes));
     }
+
+    let _ = tx.send(PubsubMessage::Close);
+
+    Ok(())
 }
 
 async fn pubsub_subscribe(
-    Path(id): Path<Uuid>,
+    Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Result<impl IntoResponse> {
-    let pubsub_clients = state.pubsub_clients.lock().await;
+    let mut pubsub_clients = state.pubsub_clients.lock().await;
 
-    if let Some(tx) = pubsub_clients.get(&id) {
-        let rx = tx.subscribe();
-
-        drop(pubsub_clients);
-
-        let mut stream = tokio_stream::wrappers::BroadcastStream::new(rx);
-
-        let producer_request_headers =
-            if let Some(Ok(PubsubMessage::Headers(headers))) = stream.next().await {
-                headers
-            } else {
-                return Err(StatusCode::INTERNAL_SERVER_ERROR.into());
-            };
-
-        // TODO figure out how to get producer headers here
-        // so we can appropriately forward on the headers
-        let stream = stream
-            .map(|m| {
-                let m = m.unwrap();
-                match m {
-                    PubsubMessage::Data(s) => Some(Ok::<Bytes, String>(s)),
-                    PubsubMessage::Close => None,
-                    PubsubMessage::Headers(_) => panic!(
-                        "we should never receive headers here, always before the main data stream"
-                    ),
-                }
-            })
-            .take_while(|item| item.is_some())
-            .map(|item| item.unwrap());
-
-        let body = Body::from_stream(stream);
-
-        let producer_content_type = producer_request_headers
-            .get(header::CONTENT_TYPE)
-            .cloned()
-            .and_then(|header_value| {
-                // TODO should we also reject multipart/form-data?
-                if header_value == "application/x-www-form-urlencoded" {
-                    None
-                } else {
-                    Some(header_value)
-                }
-            })
-            .unwrap_or(HeaderValue::from_static("application/octet-stream"));
-
-        let headers = [(header::CONTENT_TYPE, producer_content_type)];
-
-        Ok((headers, body))
+    let tx = if let Some(tx) = pubsub_clients.get(&id) {
+        tx.clone()
+    } else if state.options.autovivify {
+        let (tx, _rx) = broadcast::channel(5);
+        pubsub_clients.insert(id, tx.clone());
+        tx
     } else {
-        Err(StatusCode::NOT_FOUND.into())
-    }
+        return Err(StatusCode::NOT_FOUND.into());
+    };
+
+    drop(pubsub_clients);
+
+    let rx = tx.subscribe();
+
+    let mut stream = tokio_stream::wrappers::BroadcastStream::new(rx);
+
+    let producer_request_headers =
+        if let Some(Ok(PubsubMessage::Headers(headers))) = stream.next().await {
+            headers
+        } else {
+            return Err(StatusCode::INTERNAL_SERVER_ERROR.into());
+        };
+
+    // TODO figure out how to get producer headers here
+    // so we can appropriately forward on the headers
+    let stream = stream
+        .map(|m| {
+            let m = m.unwrap();
+            match m {
+                PubsubMessage::Data(s) => Some(Ok::<Bytes, String>(s)),
+                PubsubMessage::Close => None,
+                PubsubMessage::Headers(_) => panic!(
+                    "we should never receive headers here, always before the main data stream"
+                ),
+            }
+        })
+        .take_while(|item| item.is_some())
+        .map(|item| item.unwrap());
+
+    let body = Body::from_stream(stream);
+
+    let producer_content_type = producer_request_headers
+        .get(header::CONTENT_TYPE)
+        .cloned()
+        .and_then(|header_value| {
+            // TODO should we also reject multipart/form-data?
+            if header_value == "application/x-www-form-urlencoded" {
+                None
+            } else {
+                Some(header_value)
+            }
+        })
+        .unwrap_or(HeaderValue::from_static("application/octet-stream"));
+
+    let headers = [(header::CONTENT_TYPE, producer_content_type)];
+
+    Ok((headers, body))
 }
 
 async fn pubsub_close(
-    Path(id): Path<Uuid>,
+    Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Result<()> {
     let mut pubsub_clients = state.pubsub_clients.lock().await;
@@ -147,7 +167,7 @@ async fn pubsub_close(
 }
 
 async fn pubsub_count(
-    Path(id): Path<Uuid>,
+    Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Result<String> {
     let pubsub_clients = state.pubsub_clients.lock().await;
@@ -330,7 +350,7 @@ enum PubsubMessage {
     Close,
 }
 
-type PubSubClients = Mutex<HashMap<Uuid, broadcast::Sender<PubsubMessage>>>;
+type PubSubClients = Mutex<HashMap<String, broadcast::Sender<PubsubMessage>>>;
 
 type ChannelClients = Mutex<
     HashMap<
@@ -380,6 +400,7 @@ fn app(options: Options) -> axum::Router {
     let state = Arc::new(state);
 
     let pubsub_routes = Router::new()
+        .route("/pubsub", get(pubsub_index))
         .route("/pubsub", post(pubsub_create))
         .route("/pubsub/{id}", get(pubsub_subscribe))
         .route("/pubsub/{id}", post(pubsub_broadcast))
@@ -872,7 +893,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(ids, Vec::<String>::new())
+        assert!(ids.is_empty())
     }
 
     #[tokio::test]
@@ -918,5 +939,173 @@ mod tests {
             .unwrap();
 
         assert_eq!(ids, Vec::<String>::new())
+    }
+
+    #[tokio::test]
+    async fn pubsubs_autovivify_on_receive() {
+        let options = Options::default();
+
+        let port = get_port();
+
+        let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
+            .await
+            .unwrap();
+
+        let (_done, done_rx) = Done::new();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app(options))
+                .with_graceful_shutdown(async move { done_rx.await.unwrap() })
+                .await
+                .unwrap();
+        });
+
+        tokio::spawn(async move {
+            reqwest::get(format!(
+                "http://localhost:{port}/pubsub/it_should_autovivify_on_receive"
+            ))
+            .await
+            .unwrap()
+        });
+
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        let ids: Vec<String> = reqwest::get(format!("http://localhost:{port}/pubsub"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+
+        assert_eq!(ids, vec!["it_should_autovivify_on_receive"])
+    }
+
+    #[tokio::test]
+    async fn pubsubs_autovivify_on_publish() {
+        let options = Options::default();
+
+        let port = get_port();
+
+        let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
+            .await
+            .unwrap();
+
+        let (_done, done_rx) = Done::new();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app(options))
+                .with_graceful_shutdown(async move { done_rx.await.unwrap() })
+                .await
+                .unwrap();
+        });
+
+        tokio::spawn(async move {
+            reqwest::Client::new()
+                .post(format!(
+                    "http://localhost:{port}/pubsub/it_should_autovivify_on_publish"
+                ))
+                .body("some body")
+                .send()
+                .await
+                .unwrap()
+        });
+
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        let ids: Vec<String> = reqwest::get(format!("http://localhost:{port}/pubsub"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+
+        assert_eq!(ids, vec!["it_should_autovivify_on_publish"])
+    }
+
+    #[tokio::test]
+    async fn pubsubs_do_not_autovivify_on_receive_when_disabled() {
+        let options = Options {
+            autovivify: false,
+            ..Default::default()
+        };
+
+        let port = get_port();
+
+        let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
+            .await
+            .unwrap();
+
+        let (_done, done_rx) = Done::new();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app(options))
+                .with_graceful_shutdown(async move { done_rx.await.unwrap() })
+                .await
+                .unwrap();
+        });
+
+        assert_eq!(
+            reqwest::get(format!(
+                "http://localhost:{port}/pubsub/it_should_autovivify_on_receive"
+            ))
+            .await
+            .unwrap()
+            .status(),
+            StatusCode::NOT_FOUND
+        );
+
+        let ids: Vec<String> = reqwest::get(format!("http://localhost:{port}/pubsub"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+
+        assert!(ids.is_empty())
+    }
+
+    #[tokio::test]
+    async fn pubsubs_do_not_autovivify_on_publish_when_disabled() {
+        let options = Options {
+            autovivify: false,
+            ..Default::default()
+        };
+
+        let port = get_port();
+
+        let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
+            .await
+            .unwrap();
+
+        let (_done, done_rx) = Done::new();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app(options))
+                .with_graceful_shutdown(async move { done_rx.await.unwrap() })
+                .await
+                .unwrap();
+        });
+
+        assert_eq!(
+            reqwest::Client::new()
+                .post(format!(
+                    "http://localhost:{port}/pubsub/it_should_autovivify_on_publish"
+                ))
+                .body("some body")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+
+        let ids: Vec<String> = reqwest::get(format!("http://localhost:{port}/pubsub"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+
+        assert!(ids.is_empty())
     }
 }
