@@ -116,9 +116,14 @@ $ curl -XPOST -H "Content-Type: application/json" http://localhost:3000/pubsub/5
 Usage: httpipe [OPTIONS]
 
 Options:
-  -p, --port <PORT>                        [env: PORT=] [default: 3000]
-  -r, --request-timeout <REQUEST_TIMEOUT>  [env: REQUEST_TIMEOUT=]
-  -h, --help                               Print help
+  -p, --port <PORT>
+          the port to bind the server to [env: PORT=] [default: 3000]
+  -r, --request-timeout <REQUEST_TIMEOUT>
+          the maximum request timeout, in seconds [env: REQUEST_TIMEOUT=]
+  -a, --autovivify
+          create named channels and pubsubs when they are first requested [env: AUTOVIVIFY=]
+  -h, --help
+          Print help
 ```
 
 ## Credit
