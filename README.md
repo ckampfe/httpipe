@@ -6,6 +6,12 @@
 
 Clients can interact via a queue-like mechanism ("channels") where a producer and a consumer are matched 1:1 in the order in which they connect, or a fanout mechanism ("pubsub") where a producer can publish a message to many consumers in parallel.
 
+Channels and pubsubs are named, and by default, channels and pubsubs will automatically be created ("autovivified") when the first time their name is referenced. This is an option that can be disabled.
+
+Channels and pubsubs can also be identified with randomly generated UUIDs.
+
+See the examples for how naming/autovivification and UUIDs work in practice.
+
 ## Channels 
 
 Think of channels as basically queues.
@@ -36,15 +42,13 @@ cargo run
 In terminal #2
 
 ```sh
-# create a channel, receiving its unique ID (a UUID)...
-$ curl -XPOST http://localhost:3000/channels
-566f4825-d0b9-4712-b4e4-244884fa6b8c%
-
-# ...and then publish a message on that channel,
-# blocking if there is not yet a consumer on the other side ready to receive it
+# publish a message on that channel,
+# blocking if there is not yet a consumer on the other side ready to receive it.
+# By default, the channel will be created if it does not already exist.
+# This "autovivification" can be disabled, see the options.
 $ curl -XPOST \
     -H "Content-Type: application/json" \
-    http://localhost:3000/channels/566f4825-d0b9-4712-b4e4-244884fa6b8c \
+    http://localhost:3000/channels/greetings \
     -d'{"greeting":"bwah!"}' 
 ```
 
@@ -54,8 +58,17 @@ In terminal #3
 # receive a message from a channel, if there is one.
 # this call will block until there is a message ready to consume.
 # note that we disable curl's buffering with `-N` to make sure we receive the full response immediately.
-$ curl -N -XGET http://localhost:3000/channels/566f4825-d0b9-4712-b4e4-244884fa6b8c
+# This will also automatically create the channel if it doesn't exist.
+$ curl -N -XGET http://localhost:3000/channels/greetings
 {"greeting":"bwah!"}%    
+```
+
+Optionally, you can create an "unnamed" channel that is identified by a randomly generated UUID, like so:
+
+```sh
+# create a channel, receiving its unique ID (a UUID)...
+$ curl -XPOST http://localhost:3000/channels
+566f4825-d0b9-4712-b4e4-244884fa6b8c%
 ```
 
 ## Pubsub
@@ -87,27 +100,29 @@ cargo run
 In terminal #2
 
 ```sh
-# create a pubsub and get its ID.
-$ curl -XPOST http://localhost:3000/pubsub
-566f4825-d0b9-4712-b4e4-244884fa6b8c%
+# have a consumer listen on this pubsub.
+# note a few things:
+# - we must listen first, because with pubsub, only consumers are blocking
+# - you can repeat this command an arbitrary number of times, so an arbitrary number of clients can listen on this pubsub simultaneously, and all of them will receive the first message published after they connect
+# like with channels, pubsubs will be automatically created with the provided name, or used if they already exist
+$ curl -N -XGET http://localhost:3000/pubsub/greetings
+{"greeting":"bwah!"}%    
 ```
 
 In terminal #3
 
 ```sh
-# have a consumer listen on this pubsub.
-# note a few things:
-# - we must listen first, because with pubsub, only consumers are blocking
-# - you can repeat this command an arbitrary number of times, so an arbitrary number of clients can listen on this pubsub simultaneously, and all of them will receive the first message published after they connect
-$ curl -N -XGET http://localhost:3000/pubsub/566f4825-d0b9-4712-b4e4-244884fa6b8c
-{"greeting":"bwah!"}%    
+# Publish a message on this pubsub, regardless of whether any consumers are listening.
+# This also will automatically create a pubsub if it doesn't exist.
+$ curl -XPOST -H "Content-Type: application/json" http://localhost:3000/pubsub/greetings -d'{"greeting":"bwah!"}' 
 ```
 
-In terminal #2
+Like with channels, you can optionally use "unnamed" UUID-identified pubsubs, like so:
 
 ```sh
-# publish a message on this pubsub, regardless of whether any consumers are listening
-$ curl -XPOST -H "Content-Type: application/json" http://localhost:3000/pubsub/566f4825-d0b9-4712-b4e4-244884fa6b8c -d'{"greeting":"bwah!"}' 
+# create a pubsub and get its ID.
+$ curl -XPOST http://localhost:3000/pubsub
+566f4825-d0b9-4712-b4e4-244884fa6b8c%
 ```
 
 ## Options
