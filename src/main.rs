@@ -27,7 +27,6 @@ use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
 
 mod channel;
-// mod pubsub;
 
 /// when this is dropped it signals the oneshot channel
 struct Done {
@@ -58,7 +57,6 @@ async fn app_state(State(state): State<Arc<AppState>>) -> axum::response::Result
 
 #[derive(Debug, Default)]
 struct AppState {
-    // pubsub_clients: pubsub::PubSubClients,
     channel_clients: channel::ChannelClients,
     options: Options,
 }
@@ -71,9 +69,6 @@ struct Options {
     /// the maximum request timeout, in seconds
     #[arg(short, long, env)]
     request_timeout: Option<u64>,
-    /// create named channels and pubsubs when they are first requested
-    #[arg(short, long, env, default_value = "true")]
-    autovivify: bool,
 }
 
 impl Default for Options {
@@ -81,7 +76,6 @@ impl Default for Options {
         Self {
             port: 3000,
             request_timeout: None,
-            autovivify: true,
         }
     }
 }
@@ -89,19 +83,15 @@ impl Default for Options {
 fn app(options: Options) -> axum::Router {
     let state = AppState {
         options,
-        channel_clients: Mutex::new(HashMap::from([("default".to_string(), HashMap::new())])),
-        ..Default::default()
+        channel_clients: Mutex::new(HashMap::new()),
     };
     let state = Arc::new(state);
-
-    // let pubsub_routes = pubsub::routes();
 
     let channels_routes = channel::routes();
 
     let other_routes = Router::new().route("/state", get(app_state));
 
     let router = Router::new()
-        // .merge(pubsub_routes)
         .merge(channels_routes)
         .merge(other_routes)
         .with_state(Arc::clone(&state))
