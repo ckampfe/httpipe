@@ -27,7 +27,7 @@ use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
 
 mod channel;
-mod pubsub;
+// mod pubsub;
 
 /// when this is dropped it signals the oneshot channel
 struct Done {
@@ -58,7 +58,7 @@ async fn app_state(State(state): State<Arc<AppState>>) -> axum::response::Result
 
 #[derive(Debug, Default)]
 struct AppState {
-    pubsub_clients: pubsub::PubSubClients,
+    // pubsub_clients: pubsub::PubSubClients,
     channel_clients: channel::ChannelClients,
     options: Options,
 }
@@ -94,14 +94,14 @@ fn app(options: Options) -> axum::Router {
     };
     let state = Arc::new(state);
 
-    let pubsub_routes = pubsub::routes();
+    // let pubsub_routes = pubsub::routes();
 
     let channels_routes = channel::routes();
 
     let other_routes = Router::new().route("/state", get(app_state));
 
     let router = Router::new()
-        .merge(pubsub_routes)
+        // .merge(pubsub_routes)
         .merge(channels_routes)
         .merge(other_routes)
         .with_state(Arc::clone(&state))
