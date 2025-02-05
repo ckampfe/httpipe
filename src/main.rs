@@ -1,16 +1,13 @@
 #![forbid(unsafe_code)]
 // TODO
-// - [ ] create named topics manually
-// - [ ] terminology: id or topic?
+// - [x] terminology: id or topic? channel_name
 // - [x] list topics
-// - [ ] take away ability to disable autovivify, make it the only way
+// - [x] take away ability to disable autovivify, make it the only way
 // - [x] option to autovivify channels
-// - [x] option to autovivify pubsubs
 // - [x] option on startup whether to allow autovivify or not
 // - [x] update README for autovivify
 // - [x] namespaces for channels, e.g., /channels/some_namespace/some_id
-// - [ ] namespaces for pubsub, e.g., /channels/some_namespace/some_id
-// - [ ] /c, /p shorthand endpoints for channels and pubsubs
+// - [ ] /c, /p shorthand endpoints for channels
 // - [x] modules
 // - [ ] reevalute API endpoints to be more RESTish
 // - [ ] GET only API for browser stuff
