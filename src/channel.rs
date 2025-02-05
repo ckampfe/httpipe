@@ -32,9 +32,18 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
             "/channels/{namespace}",
             delete(delete_namespace_and_all_channels),
         )
-        .route("/channels/{namespace}/{id}", get(subscribe_to_channel))
-        .route("/channels/{namespace}/{id}", post(broadcast_to_channel))
-        .route("/channels/{namespace}/{id}", delete(delete_channel))
+        .route(
+            "/channels/{namespace}/{channel_name}",
+            get(subscribe_to_channel),
+        )
+        .route(
+            "/channels/{namespace}/{channel_name}",
+            post(broadcast_to_channel),
+        )
+        .route(
+            "/channels/{namespace}/{channel_name}",
+            delete(delete_channel),
+        )
 }
 
 async fn delete_namespace_and_all_channels(
@@ -49,13 +58,13 @@ async fn delete_namespace_and_all_channels(
 }
 
 async fn delete_channel(
-    Path((namespace, id)): Path<(String, String)>,
+    Path((namespace, channel_name)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Result<()> {
     let mut channel_clients = state.channel_clients.lock().await;
 
     if let Some(channels) = channel_clients.get_mut(&namespace) {
-        channels.remove(&id);
+        channels.remove(&channel_name);
     }
 
     Ok(())
@@ -90,7 +99,7 @@ async fn list_all_namespace_channels(
 
 async fn broadcast_to_channel(
     request_headers: HeaderMap,
-    Path((namespace, id)): Path<(String, String)>,
+    Path((namespace, channel_name)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
     body: Body,
 ) -> axum::response::Result<()> {
@@ -103,12 +112,12 @@ async fn broadcast_to_channel(
         channel_clients.get_mut(&namespace).unwrap()
     };
 
-    let tx = if let Some((tx, _rx)) = namespace_channels.get(&id) {
+    let tx = if let Some((tx, _rx)) = namespace_channels.get(&channel_name) {
         tx.clone()
     } else {
         let (tx, rx) = flume::bounded(0);
 
-        namespace_channels.insert(id, (tx.clone(), rx));
+        namespace_channels.insert(channel_name, (tx.clone(), rx));
 
         tx
     };
@@ -131,7 +140,7 @@ async fn broadcast_to_channel(
 }
 
 async fn subscribe_to_channel(
-    Path((namespace, id)): Path<(String, String)>,
+    Path((namespace, channel_name)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Result<impl IntoResponse> {
     let mut channel_clients = state.channel_clients.lock().await;
@@ -143,12 +152,12 @@ async fn subscribe_to_channel(
         channel_clients.get_mut(&namespace).unwrap()
     };
 
-    let rx = if let Some((_tx, rx)) = namespace_channels.get(&id) {
+    let rx = if let Some((_tx, rx)) = namespace_channels.get(&channel_name) {
         rx.clone()
     } else {
         let (tx, rx) = flume::bounded(0);
 
-        namespace_channels.insert(id, (tx, rx.clone()));
+        namespace_channels.insert(channel_name, (tx, rx.clone()));
 
         rx
     };
