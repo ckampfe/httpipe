@@ -420,4 +420,166 @@ mod tests {
 
         assert_eq!(ids, vec!["it_should_autovivify_on_publish"])
     }
+
+    #[tokio::test]
+    async fn delete_channel() {
+        let options = Options::default();
+
+        let port = get_port();
+
+        let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
+            .await
+            .unwrap();
+
+        let (_done, done_rx) = Done::new();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app(options))
+                .with_graceful_shutdown(async move { done_rx.await.unwrap() })
+                .await
+                .unwrap();
+        });
+
+        tokio::spawn(async move {
+            reqwest::Client::new()
+                .post(format!(
+                    "http://localhost:{port}/channels/a_great_ns/it_should_autovivify_on_publish"
+                ))
+                .body("some body")
+                .send()
+                .await
+                .unwrap()
+        });
+
+        reqwest::get(format!(
+            "http://localhost:{port}/channels/a_great_ns/it_should_autovivify_on_publish"
+        ))
+        .await
+        .unwrap();
+
+        let namespaces: HashSet<String> =
+            reqwest::get(format!("http://localhost:{port}/channels/namespaces"))
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+
+        assert_eq!(namespaces, HashSet::from(["a_great_ns".to_string()]));
+
+        let ids: Vec<String> = reqwest::get(format!("http://localhost:{port}/channels/a_great_ns"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+
+        assert_eq!(ids, vec!["it_should_autovivify_on_publish"]);
+
+        reqwest::Client::new()
+            .delete(format!(
+                "http://localhost:{port}/channels/a_great_ns/it_should_autovivify_on_publish"
+            ))
+            .send()
+            .await
+            .unwrap();
+
+        let ids: Vec<String> = reqwest::get(format!("http://localhost:{port}/channels/a_great_ns"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+
+        assert_eq!(ids, Vec::<String>::new());
+
+        let namespaces: HashSet<String> =
+            reqwest::get(format!("http://localhost:{port}/channels/namespaces"))
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+
+        assert_eq!(namespaces, HashSet::from(["a_great_ns".to_string()]));
+    }
+
+    #[tokio::test]
+    async fn delete_namespace_and_all_channels() {
+        let options = Options::default();
+
+        let port = get_port();
+
+        let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
+            .await
+            .unwrap();
+
+        let (_done, done_rx) = Done::new();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app(options))
+                .with_graceful_shutdown(async move { done_rx.await.unwrap() })
+                .await
+                .unwrap();
+        });
+
+        tokio::spawn(async move {
+            reqwest::Client::new()
+                .post(format!(
+                    "http://localhost:{port}/channels/a_great_ns/it_should_autovivify_on_publish"
+                ))
+                .body("some body")
+                .send()
+                .await
+                .unwrap()
+        });
+
+        reqwest::get(format!(
+            "http://localhost:{port}/channels/a_great_ns/it_should_autovivify_on_publish"
+        ))
+        .await
+        .unwrap();
+
+        let namespaces: HashSet<String> =
+            reqwest::get(format!("http://localhost:{port}/channels/namespaces"))
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+
+        assert_eq!(namespaces, HashSet::from(["a_great_ns".to_string()]));
+
+        let ids: Vec<String> = reqwest::get(format!("http://localhost:{port}/channels/a_great_ns"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+
+        assert_eq!(ids, vec!["it_should_autovivify_on_publish"]);
+
+        reqwest::Client::new()
+            .delete(format!("http://localhost:{port}/channels/a_great_ns"))
+            .send()
+            .await
+            .unwrap();
+
+        let ns_status = reqwest::get(format!("http://localhost:{port}/channels/a_great_ns"))
+            .await
+            .unwrap()
+            .status();
+
+        assert_eq!(ns_status, StatusCode::NOT_FOUND);
+
+        let namespaces: HashSet<String> =
+            reqwest::get(format!("http://localhost:{port}/channels/namespaces"))
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+
+        assert_eq!(namespaces, HashSet::new());
+    }
 }
