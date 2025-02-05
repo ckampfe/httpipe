@@ -198,7 +198,7 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use std::{collections::HashSet, sync::atomic::AtomicU16};
 
-    static PORT: AtomicU16 = AtomicU16::new(3000);
+    static PORT: AtomicU16 = AtomicU16::new(4000);
 
     fn get_port() -> u16 {
         PORT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
