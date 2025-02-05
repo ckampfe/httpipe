@@ -21,14 +21,26 @@ curl -XPOST /channels/v1/do_work -d"hello"
 ```
 
 ```sh
-# ...and in another terminal, a different client receives it
+# ...and in another terminal, a consumer client receives it
 curl -XGET /channels/v1/do_work
 hello%
 ```
 
-The data sent by the first request ended up in the response to the second request.
+The data was piped from the first request (the producer) to the second (the consumer).
 
-## Naming
+
+## installation
+
+```
+$ cargo install --git https://github.com/ckampfe/httpipe.git
+```
+
+This downloads and builds `httpipe` from source from this repo, assuming you have [Rust installed](https://www.rust-lang.org/tools/install).
+
+
+## Details
+
+### Naming
 
 Channels are uniquely identified by their namespace and name, both of which are required.
 
@@ -46,7 +58,7 @@ Both namespaces and channel names are automatically created on first use and can
 Namespaces and channels can be destroyed manually by deleting either a specific channel (`DELETE /channels/{namespace}/{channel_name}`), or by deleting the namespace and all of its associated channels (`DELETE /channels/{namespace}`).
 
 
-## Concurrency and order
+### Concurrency and order
 
 The concurrency of a given channel is 1.
 
@@ -64,7 +76,13 @@ If we then make a single consumer request to `/channels/v1/do_work` (call it `c1
 (Note that the "producer queue" and "consumer queue" terms are just metaphors. `httpipe` implements this behavior in a slightly different way, but this "queue" logic still applies.)
 
 
-## Options
+### Use cases
+
+It turns out this functionality, limited as it is, is enough to do a lot of useful stuff.
+You can use `httpipe` to send notifications, build a concurrent job queue, share files, chat, and all kinds of other stuff. See the [archived patchbay site](https://web.archive.org/web/20241105063704/https://patchbay.pub/) for other ideas.
+
+
+### Options
 
 ```
 Usage: httpipe [OPTIONS]
@@ -78,14 +96,13 @@ Options:
           Print help
 ```
 
-## Use cases
 
-It turns out this functionality, limited as it is, is enough to do a lot of useful stuff.
-You can use `httpipe` to send notifications, build a concurrent job queue, share files, chat, and all kinds of other stuff. See the [archived patchbay site](https://web.archive.org/web/20241105063704/https://patchbay.pub/) for other ideas.
-
-
-## Credit
+### Credit
 
 This is not my idea! I first discovered this idea a few years ago as [patchbay](https://web.archive.org/web/20241105063704/https://patchbay.pub/) by [Anders Pitman](https://github.com/anderspitman). Recently I remembered patchbay, and found out that it is apparently no longer available, so I decided to try to build my own based on what I could read on the archive of the patchbay site.
 
 Note that this project is an entirely new work and does not draw from or use the original patchbay code in any way, so any flaws in it are mine alone.
+
+### Todo
+
+This originally had patchbay's additional pubsub functionality but I removed it while I work on the design. I may add it back at some point, or not.
