@@ -2,128 +2,67 @@
 
 [![Rust](https://github.com/ckampfe/httpipe/actions/workflows/rust.yml/badge.svg)](https://github.com/ckampfe/httpipe/actions/workflows/rust.yml)
 
-`httpipe` is an HTTP server that allows HTTP clients to publish and subscribe to each other.
 
-Clients can interact via a queue-like mechanism ("channels") where a producer and a consumer are matched 1:1 in the order in which they connect, or a fanout mechanism ("pubsub") where a producer can publish a message to many consumers in parallel.
+`httpipe` is an HTTP server that allows for HTTP clients to forward data to each other in a queue-like way using named channels.
 
-Channels and pubsubs are named, and by default, channels and pubsubs will automatically be created ("autovivified") when the first time their name is referenced. This is an option that can be disabled.
 
-Channels and pubsubs can also be identified with randomly generated UUIDs.
+## What is this 
 
-See the examples for how naming/autovivification and UUIDs work in practice.
+In `httpipe`, channels are named, logical queues for conveying data from one HTTP request to another, so `httpipe` is like its name describes: a way to pipe data from one HTTP client to another, via a central server.
 
-## Channels 
+A producer enqueues data to send by sending a `POST` request to a channel.
+A consumer receives that data by sending a `GET` request to the same channel.
 
-Think of channels as basically queues.
-
-A producer (`POST /channels/{id}`) puts a message into the channel, waiting until there is a consumer to take it.
-
-If there is no consumer, the producer call will block.
-
-Likewise, a consumer (`GET /channels/{id}`) waits for a message, blocking if there isn't one.
-
-Only one consumer will ever receive a given producer's message.
-
-Producers and consumers are matched to each other in request order.
-
-All actions take place within the context of a single HTTP request.
-Producers publish their message and then disconnect.
-Consumers receive a single message and then disconnect.
-
-### Example
-
-In terminal #1
+For example:
 
 ```sh
-# run the server
-cargo run
+# in one terminal, a producer client enqueues data...
+curl -XPOST /channels/v1/do_work -d"hello"
 ```
-
-In terminal #2
 
 ```sh
-# publish a message on that channel,
-# blocking if there is not yet a consumer on the other side ready to receive it.
-# By default, the channel will be created if it does not already exist.
-# This "autovivification" can be disabled, see the options.
-$ curl -XPOST \
-    -H "Content-Type: application/json" \
-    http://localhost:3000/channels/greetings \
-    -d'{"greeting":"bwah!"}' 
+# ...and in another terminal, a different client receives it
+curl -XGET /channels/v1/do_work
+hello%
 ```
 
-In terminal #3
+The data sent by the first request ended up in the response to the second request.
 
-```sh
-# receive a message from a channel, if there is one.
-# this call will block until there is a message ready to consume.
-# note that we disable curl's buffering with `-N` to make sure we receive the full response immediately.
-# This will also automatically create the channel if it doesn't exist.
-$ curl -N -XGET http://localhost:3000/channels/greetings
-{"greeting":"bwah!"}%    
-```
+## Naming
 
-Optionally, you can create an "unnamed" channel that is identified by a randomly generated UUID, like so:
+Channels are uniquely identified by their namespace and name, both of which are required.
 
-```sh
-# create a channel, receiving its unique ID (a UUID)...
-$ curl -XPOST http://localhost:3000/channels
-566f4825-d0b9-4712-b4e4-244884fa6b8c%
-```
+This is the URL scheme: `/channels/{namespace}/{channel_name}`.
 
-## Pubsub
+For example, the channel `/channels/v1/do_work` has the namespace `v1` and the name `do_work`.
 
-Pubsub is a traditional fanout-style/broadcast-style 1:N ephemeral messaging mechanism.
-Many consumers can listen on a given pubsub, and when a producer publishes on that pubsub,
-every consumer currenlty listening to that pubsub will receive the message that producer sent.
+- There can be arbitrarily many namespaces.
+- Namespaces are globally unique (the namespace `foo` always refers to the same namespace).
+- Namespaces can have many arbitrarily many channels.
+- Channel names are unique per namespace, meaning `/channels/v1/foo` is a different channel than `/channels/v2/foo`, even though both have the same channel name.
 
-Publishing to a pubsub (`POST /pubsub/{id}`) is non-blocking. A producer's POST to a pubsub always succeeds immediately,
-even if there are no consumers listening.
+Both namespaces and channel names are automatically created on first use and cannot be manually created out of band.
 
-Consuming from a pubsub (`GET /pubsub/{id}`) is blocking. Consumers will wait until they receive
-a message. Any number of consumers can wait concurrently, but they will all receive the first
-message to be published on a pubsub.
+Namespaces and channels can be destroyed manually by deleting either a specific channel (`DELETE /channels/{namespace}/{channel_name}`), or by deleting the namespace and all of its associated channels (`DELETE /channels/{namespace}`).
 
-Like with channels, all actions take place within the context of a single HTTP request.
-Producers publish their message and then disconnect.
-Consumers receive a single message and then disconnect.
 
-### Example
+## Concurrency and order
 
-In terminal #1
+The concurrency of a given channel is 1.
 
-```sh
-# run the server
-cargo run
-```
+Channels are "rendezvous" queues, in that both producer and consumer requests to a given channel will block until there is a counterpart on the other side of the channel to either receive or produce data, respectively. That is, a producer will block until there is a consumer, and a consumer will block until there is a producer.
 
-In terminal #2
+There can be arbitrarily many producer and consumer requests currently pending against an instance of `httpipe`, but only one producer-consumer pair at a time for a given channel can be exchanging data.
 
-```sh
-# have a consumer listen on this pubsub.
-# note a few things:
-# - we must listen first, because with pubsub, only consumers are blocking
-# - you can repeat this command an arbitrary number of times, so an arbitrary number of clients can listen on this pubsub simultaneously, and all of them will receive the first message published after they connect
-# like with channels, pubsubs will be automatically created with the provided name, or used if they already exist
-$ curl -N -XGET http://localhost:3000/pubsub/greetings
-{"greeting":"bwah!"}%    
-```
+Producers and consumers are matched in the order in which they made their requests.
+You can think of this logically as there being a "producer queue" and a "consumer queue".
 
-In terminal #3
+For example, if we make 4 consecutive producer requests to `/channels/v1/do_work` (call them `p1`, `p2`, `p3`, and `p4`), they would all block until a consumer connects for each of them, because we have enqueued 4 producer requests into the "producer queue".
 
-```sh
-# Publish a message on this pubsub, regardless of whether any consumers are listening.
-# This also will automatically create a pubsub if it doesn't exist.
-$ curl -XPOST -H "Content-Type: application/json" http://localhost:3000/pubsub/greetings -d'{"greeting":"bwah!"}' 
-```
+If we then make a single consumer request to `/channels/v1/do_work` (call it `c1`), `httpipe` will match `p1` with `c1` by popping `p1` off the "producer queue" and popping `c1` off the "consumer queue", sending `p1`'s data to `c1`. Producer requests `p2`, `p3`, and `p4` would still remain blocking in the "producer queue", waiting for consumers to connect.
 
-Like with channels, you can optionally use "unnamed" UUID-identified pubsubs, like so:
+(Note that the "producer queue" and "consumer queue" terms are just metaphors. `httpipe` implements this behavior in a slightly different way, but this "queue" logic still applies.)
 
-```sh
-# create a pubsub and get its ID.
-$ curl -XPOST http://localhost:3000/pubsub
-566f4825-d0b9-4712-b4e4-244884fa6b8c%
-```
 
 ## Options
 
@@ -135,11 +74,15 @@ Options:
           the port to bind the server to [env: PORT=] [default: 3000]
   -r, --request-timeout <REQUEST_TIMEOUT>
           the maximum request timeout, in seconds [env: REQUEST_TIMEOUT=]
-  -a, --autovivify
-          create named channels and pubsubs when they are first requested [env: AUTOVIVIFY=]
   -h, --help
           Print help
 ```
+
+## Use cases
+
+It turns out this functionality, limited as it is, is enough to do a lot of useful stuff.
+You can use `httpipe` to send notifications, build a concurrent job queue, share files, chat, and all kinds of other stuff. See the [archived patchbay site](https://web.archive.org/web/20241105063704/https://patchbay.pub/) for other ideas.
+
 
 ## Credit
 
