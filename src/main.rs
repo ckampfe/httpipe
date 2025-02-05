@@ -13,11 +13,14 @@
 // - [ ] GET only API for browser stuff
 // - [ ] add diagram to README to explain what httpipe is
 // - [ ] rename to httq?
+// - [ ] clean up topics/channels that have no use
 
 use axum::extract::State;
+use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
 use clap::Parser;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::error::Error;
 use std::sync::Arc;
@@ -48,8 +51,17 @@ impl Drop for Done {
     }
 }
 
-async fn app_state(State(state): State<Arc<AppState>>) -> axum::response::Result<String> {
-    Ok(format!("{:#?}", state))
+async fn app_state(
+    State(state): State<Arc<AppState>>,
+) -> axum::response::Result<impl IntoResponse> {
+    let channel_clients = state.channel_clients.lock().await;
+    let channel_stats: HashMap<_, _> = channel_clients
+        .clone()
+        .into_iter()
+        .map(|(namespace, channels)| (namespace, channels.into_keys().collect::<Vec<_>>()))
+        .collect();
+
+    Ok(axum::Json(channel_stats))
 }
 
 #[derive(Debug, Default)]
@@ -58,7 +70,7 @@ struct AppState {
     options: Options,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Serialize)]
 struct Options {
     /// the port to bind the server to
     #[arg(short, long, env, default_value = "3000")]
