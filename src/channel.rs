@@ -270,6 +270,22 @@ mod tests {
         let get_response_text = get_response.text().await.unwrap();
         let get_response_parsed: TestMessage = serde_json::from_str(&get_response_text).unwrap();
         assert_eq!(get_response_parsed, test_message_clone);
+
+        let namespaces: Vec<String> =
+            reqwest::get(format!("http://localhost:{port}/channels/namespaces"))
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+
+        assert_eq!(namespaces, Vec::<String>::new());
+
+        let ids = reqwest::get(format!("http://localhost:{port}/channels/a_great_ns"))
+            .await
+            .unwrap();
+
+        assert_eq!(ids.status(), StatusCode::NOT_FOUND)
     }
 
     #[tokio::test]
