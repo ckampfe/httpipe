@@ -347,7 +347,7 @@ mod tests {
             .unwrap()
         });
 
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         let namespaces: HashSet<String> =
             reqwest::get(format!("http://localhost:{port}/channels/namespaces"))
@@ -399,7 +399,7 @@ mod tests {
                 .unwrap()
         });
 
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         let namespaces: HashSet<String> =
             reqwest::get(format!("http://localhost:{port}/channels/namespaces"))
