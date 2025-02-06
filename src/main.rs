@@ -9,11 +9,13 @@
 // - [x] namespaces for channels, e.g., /channels/some_namespace/some_id
 // - [ ] /c, /p shorthand endpoints for channels
 // - [x] modules
+// - [x] automatically delete channels when unused
+// - [x] automatically delete namespaces when unused
 // - [ ] reevalute API endpoints to be more RESTish
 // - [ ] GET only API for browser stuff
 // - [ ] add diagram to README to explain what httpipe is
 // - [ ] rename to httq?
-// - [ ] clean up topics/channels that have no use
+// - [x] clean up topics/channels that have no use
 
 use axum::extract::State;
 use axum::response::IntoResponse;
@@ -96,7 +98,7 @@ fn app(options: Options) -> axum::Router {
     };
     let state = Arc::new(state);
 
-    let channels_routes = channel::routes();
+    let channels_routes = channel::routes(Arc::clone(&state));
 
     let other_routes = Router::new().route("/state", get(app_state));
 
