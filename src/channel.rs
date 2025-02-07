@@ -58,17 +58,16 @@ async fn clean_up_unused_channels(
 
         let mut channel_clients = state.channel_clients.lock().await;
 
-        let delete_namespace = if let Some(namespace_channels) = channel_clients.get_mut(&namespace)
-        {
-            namespace_channels.remove(&channel_name);
+        if let Some(namespace_channels) = channel_clients.get_mut(&namespace) {
+            if let Some((tx, _rx)) = namespace_channels.get(&channel_name) {
+                if tx.sender_count() <= 1 && tx.receiver_count() <= 1 {
+                    namespace_channels.remove(&channel_name);
+                }
+            }
 
-            namespace_channels.is_empty()
-        } else {
-            false
-        };
-
-        if delete_namespace {
-            channel_clients.remove(&namespace);
+            if namespace_channels.is_empty() {
+                channel_clients.remove(&namespace);
+            }
         }
     });
 
@@ -441,4 +440,7 @@ mod tests {
 
         assert_eq!(ids, vec!["it_should_autovivify_on_publish"])
     }
+
+    // #[tokio::test]
+    // async fn auto_cleanup_does_not_delete_when_multiple_connections_exist()
 }
