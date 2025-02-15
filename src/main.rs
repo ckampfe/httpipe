@@ -75,7 +75,7 @@ struct AppState {
 #[derive(Parser, Debug, Serialize)]
 struct Options {
     /// the port to bind the server to
-    #[arg(short, long, env, default_value = "3000")]
+    #[arg(short, long, env, default_value = "6789")]
     port: u16,
     /// the maximum request timeout, in seconds
     #[arg(short, long, env)]
@@ -85,7 +85,7 @@ struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            port: 3000,
+            port: 6789,
             request_timeout: None,
         }
     }
