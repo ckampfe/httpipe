@@ -1,14 +1,14 @@
 use crate::{AppState, Done};
+use axum::Router;
 use axum::body::{Body, BodyDataStream};
 use axum::extract::{Path, Request, State};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::Router;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{Mutex, oneshot};
 
 type Namespace = String;
 type ChannelName = String;
@@ -197,7 +197,7 @@ async fn subscribe_to_channel(
 
 #[cfg(test)]
 mod tests {
-    use crate::{app, Done, Options};
+    use crate::{Done, Options, app};
     use axum::http::StatusCode;
     use serde::{Deserialize, Serialize};
     use std::{collections::HashSet, sync::atomic::AtomicU16};
