@@ -17,16 +17,15 @@
 // - [ ] rename to httq?
 // - [x] clean up topics/channels that have no use
 
+use axum::Router;
 use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::routing::get;
-use axum::Router;
 use clap::Parser;
-use serde::Serialize;
 use std::collections::HashMap;
 use std::error::Error;
 use std::sync::Arc;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{Mutex, oneshot};
 
 mod channel;
 
@@ -72,7 +71,7 @@ struct AppState {
     options: Options,
 }
 
-#[derive(Parser, Debug, Serialize)]
+#[derive(Parser, Debug)]
 struct Options {
     /// the port to bind the server to
     #[arg(short, long, env, default_value = "6789")]
