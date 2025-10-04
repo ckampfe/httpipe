@@ -1,4 +1,5 @@
-use crate::{AppState, Done};
+use crate::AppState;
+use crate::drop_guard::DropGuard;
 use axum::Router;
 use axum::body::{Body, BodyDataStream};
 use axum::extract::{Path, Request, State};
@@ -18,8 +19,8 @@ pub(crate) type ChannelClients = Mutex<
         HashMap<
             ChannelName,
             (
-                flume::Sender<(BodyDataStream, HeaderMap, Done)>,
-                flume::Receiver<(BodyDataStream, HeaderMap, Done)>,
+                flume::Sender<(BodyDataStream, HeaderMap, DropGuard)>,
+                flume::Receiver<(BodyDataStream, HeaderMap, DropGuard)>,
             ),
         >,
     >,
@@ -133,13 +134,13 @@ async fn broadcast_to_channel(
 
     let request_body_stream = body.into_data_stream();
 
-    let (done, done_rx) = Done::new();
+    let (drop_guard, drop_guard_rx) = DropGuard::new();
 
-    tx.send_async((request_body_stream, request_headers, done))
+    tx.send_async((request_body_stream, request_headers, drop_guard))
         .await
         .map_err(|_e| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    done_rx
+    drop_guard_rx
         .await
         .map_err(|_e| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -171,10 +172,10 @@ async fn subscribe_to_channel(
 
     let rx = rx.into_recv_async();
 
-    let (stream, producer_request_headers, _done) =
+    let (request_body_stream, producer_request_headers, _drop_guard) =
         rx.await.map_err(|_e| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let body = Body::from_stream(stream);
+    let body = Body::from_stream(request_body_stream);
 
     // we do this because by default, POSTs from curl are `x-www-form-urlencoded`
     let producer_content_type = producer_request_headers
@@ -198,7 +199,8 @@ async fn subscribe_to_channel(
 
 #[cfg(test)]
 mod tests {
-    use crate::{Done, Options, app};
+    use crate::drop_guard::DropGuard;
+    use crate::{Options, app};
     use axum::http::StatusCode;
     use serde::{Deserialize, Serialize};
     use std::{collections::HashSet, sync::atomic::AtomicU16};
@@ -230,11 +232,11 @@ mod tests {
             .await
             .unwrap();
 
-        let (_done, done_rx) = Done::new();
+        let (_drop_guard, drop_guard_rx) = DropGuard::new();
 
         tokio::spawn(async move {
             axum::serve(listener, app(options))
-                .with_graceful_shutdown(async move { done_rx.await.unwrap() })
+                .with_graceful_shutdown(async move { drop_guard_rx.await.unwrap() })
                 .await
                 .unwrap();
         });
@@ -300,11 +302,11 @@ mod tests {
             .await
             .unwrap();
 
-        let (_done, done_rx) = Done::new();
+        let (_drop_guard, drop_guard_rx) = DropGuard::new();
 
         tokio::spawn(async move {
             axum::serve(listener, app(options))
-                .with_graceful_shutdown(async move { done_rx.await.unwrap() })
+                .with_graceful_shutdown(async move { drop_guard_rx.await.unwrap() })
                 .await
                 .unwrap();
         });
@@ -351,11 +353,11 @@ mod tests {
             .await
             .unwrap();
 
-        let (_done, done_rx) = Done::new();
+        let (_drop_guard, drop_guard_rx) = DropGuard::new();
 
         tokio::spawn(async move {
             axum::serve(listener, app(options))
-                .with_graceful_shutdown(async move { done_rx.await.unwrap() })
+                .with_graceful_shutdown(async move { drop_guard_rx.await.unwrap() })
                 .await
                 .unwrap();
         });
@@ -400,11 +402,11 @@ mod tests {
             .await
             .unwrap();
 
-        let (_done, done_rx) = Done::new();
+        let (_drop_guard, drop_guard_rx) = DropGuard::new();
 
         tokio::spawn(async move {
             axum::serve(listener, app(options))
-                .with_graceful_shutdown(async move { done_rx.await.unwrap() })
+                .with_graceful_shutdown(async move { drop_guard_rx.await.unwrap() })
                 .await
                 .unwrap();
         });

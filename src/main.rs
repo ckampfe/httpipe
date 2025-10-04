@@ -25,32 +25,10 @@ use clap::Parser;
 use std::collections::HashMap;
 use std::error::Error;
 use std::sync::Arc;
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::Mutex;
 
 mod channel;
-
-/// when this is dropped it signals the oneshot channel
-struct Done {
-    tx: Option<oneshot::Sender<()>>,
-}
-
-impl Done {
-    fn new() -> (Done, oneshot::Receiver<()>) {
-        let (tx, rx) = oneshot::channel();
-        (Done { tx: Some(tx) }, rx)
-    }
-}
-
-impl Drop for Done {
-    fn drop(&mut self) {
-        // needed because we can't move out of a &mut
-        let tx = self
-            .tx
-            .take()
-            .expect("this should never happen, it should always be Some");
-        let _ = tx.send(());
-    }
-}
+mod drop_guard;
 
 async fn app_state(
     State(state): State<Arc<AppState>>,
