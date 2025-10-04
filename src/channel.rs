@@ -7,23 +7,26 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, oneshot};
 
-type Namespace = String;
-type ChannelName = String;
+/// the data the producer is sending to the consumer
+pub(crate) struct Payload {
+    body_stream: BodyDataStream,
+    headers: HeaderMap,
+    drop_guard: DropGuard,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Deserialize, Serialize)]
+pub(crate) struct Namespace(String);
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Deserialize, Serialize)]
+pub(crate) struct ChannelName(String);
+
 pub(crate) type ChannelClients = Mutex<
-    HashMap<
-        Namespace,
-        HashMap<
-            ChannelName,
-            (
-                flume::Sender<(BodyDataStream, HeaderMap, DropGuard)>,
-                flume::Receiver<(BodyDataStream, HeaderMap, DropGuard)>,
-            ),
-        >,
-    >,
+    HashMap<Namespace, HashMap<ChannelName, (flume::Sender<Payload>, flume::Receiver<Payload>)>>,
 >;
 
 pub(crate) fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
@@ -47,7 +50,7 @@ pub(crate) fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
 }
 
 async fn clean_up_unused_channels(
-    Path((namespace, channel_name)): Path<(String, String)>,
+    Path((namespace, channel_name)): Path<(Namespace, ChannelName)>,
     State(state): State<Arc<AppState>>,
     request: Request,
     next: Next,
@@ -82,7 +85,7 @@ async fn clean_up_unused_channels(
 
 async fn list_all_namespaces(
     State(state): State<Arc<AppState>>,
-) -> axum::response::Result<axum::Json<Vec<String>>> {
+) -> axum::response::Result<axum::Json<Vec<Namespace>>> {
     let channel_clients = state.channel_clients.lock().await;
 
     Ok(axum::Json(
@@ -91,9 +94,9 @@ async fn list_all_namespaces(
 }
 
 async fn list_all_namespace_channels(
-    Path(namespace): Path<String>,
+    Path(namespace): Path<Namespace>,
     State(state): State<Arc<AppState>>,
-) -> axum::response::Result<axum::Json<Vec<String>>> {
+) -> axum::response::Result<axum::Json<Vec<ChannelName>>> {
     let channel_clients = state.channel_clients.lock().await;
 
     let namespaced_channels = if let Some(channels) = channel_clients.get(&namespace) {
@@ -108,8 +111,8 @@ async fn list_all_namespace_channels(
 }
 
 async fn broadcast_to_channel(
-    request_headers: HeaderMap,
-    Path((namespace, channel_name)): Path<(String, String)>,
+    headers: HeaderMap,
+    Path((namespace, channel_name)): Path<(Namespace, ChannelName)>,
     State(state): State<Arc<AppState>>,
     body: Body,
 ) -> axum::response::Result<()> {
@@ -132,13 +135,17 @@ async fn broadcast_to_channel(
 
     drop(channel_clients);
 
-    let request_body_stream = body.into_data_stream();
+    let body_stream = body.into_data_stream();
 
     let (drop_guard, drop_guard_rx) = DropGuard::new();
 
-    tx.send_async((request_body_stream, request_headers, drop_guard))
-        .await
-        .map_err(|_e| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tx.send_async(Payload {
+        body_stream,
+        headers,
+        drop_guard,
+    })
+    .await
+    .map_err(|_e| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     drop_guard_rx
         .await
@@ -148,7 +155,7 @@ async fn broadcast_to_channel(
 }
 
 async fn subscribe_to_channel(
-    Path((namespace, channel_name)): Path<(String, String)>,
+    Path((namespace, channel_name)): Path<(Namespace, ChannelName)>,
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Result<impl IntoResponse> {
     let mut channel_clients = state.channel_clients.lock().await;
@@ -172,10 +179,13 @@ async fn subscribe_to_channel(
 
     let rx = rx.into_recv_async();
 
-    let (request_body_stream, producer_request_headers, _drop_guard) =
-        rx.await.map_err(|_e| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let Payload {
+        body_stream,
+        headers: producer_request_headers,
+        drop_guard: _drop_guard,
+    } = rx.await.map_err(|_e| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let body = Body::from_stream(request_body_stream);
+    let body = Body::from_stream(body_stream);
 
     // we do this because by default, POSTs from curl are `x-www-form-urlencoded`
     let producer_content_type = producer_request_headers
