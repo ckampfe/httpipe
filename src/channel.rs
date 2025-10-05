@@ -116,37 +116,40 @@ async fn broadcast_to_channel(
     State(state): State<Arc<AppState>>,
     body: Body,
 ) -> axum::response::Result<()> {
-    let mut channel_clients = state.channel_clients.lock().await;
+    let channel_tx = {
+        // dropped at the end of this scope
+        let mut channel_clients = state.channel_clients.lock().await;
 
-    let namespace_channels = match channel_clients.entry(namespace) {
-        std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-        std::collections::hash_map::Entry::Vacant(e) => e.insert(HashMap::new()),
+        let channels = match channel_clients.entry(namespace) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(e) => e.insert(HashMap::new()),
+        };
+
+        if let Some((tx, _rx)) = channels.get(&channel_name) {
+            tx.clone()
+        } else {
+            let (tx, rx) = flume::bounded(0);
+
+            channels.insert(channel_name, (tx.clone(), rx));
+
+            tx
+        }
     };
-
-    let tx = if let Some((tx, _rx)) = namespace_channels.get(&channel_name) {
-        tx.clone()
-    } else {
-        let (tx, rx) = flume::bounded(0);
-
-        namespace_channels.insert(channel_name, (tx.clone(), rx));
-
-        tx
-    };
-
-    drop(channel_clients);
 
     let body_stream = body.into_data_stream();
 
     let (drop_guard, drop_guard_rx) = DropGuard::new();
 
-    tx.send_async(Payload {
-        body_stream,
-        headers,
-        drop_guard,
-    })
-    .await
-    .map_err(|_e| StatusCode::INTERNAL_SERVER_ERROR)?;
+    channel_tx
+        .send_async(Payload {
+            body_stream,
+            headers,
+            drop_guard,
+        })
+        .await
+        .map_err(|_e| StatusCode::INTERNAL_SERVER_ERROR)?;
 
+    // wait for the drop guard to finish before we complete this http request
     drop_guard_rx
         .await
         .map_err(|_e| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -158,32 +161,35 @@ async fn subscribe_to_channel(
     Path((namespace, channel_name)): Path<(Namespace, ChannelName)>,
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Result<impl IntoResponse> {
-    let mut channel_clients = state.channel_clients.lock().await;
+    let channel_rx = {
+        // dropped at the end of this scope
+        let mut channel_clients = state.channel_clients.lock().await;
 
-    let namespace_channels = match channel_clients.entry(namespace) {
-        std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-        std::collections::hash_map::Entry::Vacant(e) => e.insert(HashMap::new()),
+        let channels = match channel_clients.entry(namespace) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(e) => e.insert(HashMap::new()),
+        };
+
+        let rx = if let Some((_tx, rx)) = channels.get(&channel_name) {
+            rx.clone()
+        } else {
+            let (tx, rx) = flume::bounded(0);
+
+            channels.insert(channel_name, (tx, rx.clone()));
+
+            rx
+        };
+
+        rx.into_recv_async()
     };
-
-    let rx = if let Some((_tx, rx)) = namespace_channels.get(&channel_name) {
-        rx.clone()
-    } else {
-        let (tx, rx) = flume::bounded(0);
-
-        namespace_channels.insert(channel_name, (tx, rx.clone()));
-
-        rx
-    };
-
-    drop(channel_clients);
-
-    let rx = rx.into_recv_async();
 
     let Payload {
         body_stream,
         headers: producer_request_headers,
         drop_guard: _drop_guard,
-    } = rx.await.map_err(|_e| StatusCode::INTERNAL_SERVER_ERROR)?;
+    } = channel_rx
+        .await
+        .map_err(|_e| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let body = Body::from_stream(body_stream);
 
