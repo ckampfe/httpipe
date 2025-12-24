@@ -17,10 +17,10 @@
 // - [ ] rename to httq?
 // - [x] clean up topics/channels that have no use
 
-use axum::Router;
 use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::routing::get;
+use axum::{Router, http};
 use clap::Parser;
 use std::collections::HashMap;
 use std::error::Error;
@@ -88,7 +88,8 @@ fn app(options: Options) -> axum::Router {
         .layer(tower_http::trace::TraceLayer::new_for_http());
 
     if let Some(request_timeout) = state.options.request_timeout {
-        router.layer(tower_http::timeout::TimeoutLayer::new(
+        router.layer(tower_http::timeout::TimeoutLayer::with_status_code(
+            http::StatusCode::REQUEST_TIMEOUT,
             std::time::Duration::from_secs(request_timeout),
         ))
     } else {
